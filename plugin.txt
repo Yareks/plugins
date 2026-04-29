@@ -1,2 +1,2 @@
 MeowWG - Yareks/plugins/amnezia.plugin
-Banner - Yareks/plugins/banner.png, 14cb8d246f25a8cc6ec9b2369926afa2.jpg
+Banner - Yareks/plugins/banner.png, banner2.png, banner3.png, banner4.png, banner5.png
