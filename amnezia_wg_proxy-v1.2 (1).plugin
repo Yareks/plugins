@@ -1,0 +1,455 @@
+import base64, os, ctypes, traceback, threading, time, random, string, requests, socket
+# @la_cringe sps
+from java import jclass, dynamic_proxy
+from java.lang import String, Integer
+
+from base_plugin import BasePlugin, MethodHook
+from android_utils import log, run_on_ui_thread
+from hook_utils import find_class
+
+from ui.settings import Header, Text, Divider
+from ui.bulletin import BulletinHelper
+
+from org.telegram.messenger import AndroidUtilities, SharedConfig, MessagesController, UserConfig, NotificationCenter
+from org.telegram.tgnet import ConnectionsManager
+
+try:
+    import ReMandre
+except ImportError:
+    ReMandre = None
+
+__id__ = "amnezia_wg_proxy"
+__name__ = "AmneziaWG Proxy"
+__description__ = "AmneziaWg клиент / VPGRAM vpn (Auto mode)"
+__author__ = "@swagnonher"
+__version__ = "1.2"
+__icon__ = "Rom4ikExperiments/20"
+__min_version__ = "11.12.0"
+
+PROXY_PORT = 2337
+PROXY_IP   = "127.0.0.1"
+HEARTBEAT_INTERVAL = 10  # seconds
+HEARTBEAT_TIMEOUT = 5    # seconds
+
+class Logger:
+    TAG = "[AmneziaWG]"
+    @staticmethod
+    def d(msg): log(f"{Logger.TAG} {msg}")
+    @staticmethod
+    def e(msg, exc=None):
+        log(f"{Logger.TAG} ERROR: {msg} | {exc}\n{traceback.format_exc()}" if exc else f"{Logger.TAG} ERROR: {msg}")
+
+class AWGUAPIParser:
+    @staticmethod
+    def parse(conf_text: str):
+        uapi, local_ip, dns_ip, section = [], "10.0.0.2", "8.8.8.8", None
+
+        for raw in conf_text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"): continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1].lower(); continue
+            if "=" not in line: continue
+
+            key, val = (x.strip() for x in line.split("=", 1))
+            k = key.lower()
+
+            if section == "interface":
+                if k == "privatekey":
+                    try: uapi.append(f"private_key={base64.b64decode(val).hex()}")
+                    except: pass
+                elif k == "address":  local_ip = val.split("/")[0]
+                elif k == "dns":      dns_ip   = val.split(",")[0].strip()
+                elif k in ("jc","jmin","jmax","s1","s2","h1","h2","h3","h4"): uapi.append(f"{k}={val}")
+                elif k == "listenport": uapi.append(f"listen_port={val}")
+
+            elif section == "peer":
+                if k == "publickey":
+                    try: uapi.append(f"public_key={base64.b64decode(val).hex()}")
+                    except: pass
+                elif k == "endpoint":            uapi.append(f"endpoint={val}")
+                elif k == "allowedips":
+                    for ip in val.split(","): uapi.append(f"allowed_ip={ip.strip()}")
+                elif k == "presharedkey":
+                    try: uapi.append(f"preshared_key={base64.b64decode(val).hex()}")
+                    except: pass
+                elif k == "persistentkeepalive": uapi.append(f"persistent_keepalive_interval={val}")
+
+        return "\n".join(uapi) + "\n", local_ip, dns_ip
+
+class AWGCore:
+    def __init__(self):
+        self.lib = None
+        self.is_downloading = False
+
+    def init_native(self, on_success=None, on_error=None):
+        if self.is_available():
+            if on_success: on_success()
+            return
+
+        def task():
+            self.is_downloading = True
+            try:
+                if not ReMandre: raise Exception("ReMandre не установлен!")
+                loader = ReMandre.ReLoad.get()
+
+                for _ in range(40):
+                    if "libawg_proxy" in loader.loaded_modules:
+                        self.lib = loader.loaded_modules["libawg_proxy"]
+                        self.lib.StartAWGProxy.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+                        self.lib.StartAWGProxy.restype  = ctypes.c_int
+                        self.lib.StopAWGProxy.argtypes  = []
+                        self.lib.StopAWGProxy.restype   = ctypes.c_int
+                        Logger.d("Core initialized via ReMandre")
+                        break
+                    time.sleep(0.5)
+                else:
+                    raise Exception("Таймаут ожидания загрузки libawg_proxy.so через ReMandre")
+
+                self.is_downloading = False
+                if on_success: on_success()
+            except Exception as e:
+                self.is_downloading = False
+                Logger.e("Failed to init native core", e)
+                if on_error: on_error(str(e))
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def is_available(self) -> bool:
+        return self.lib is not None
+
+    def start(self, conf_text: str) -> str:
+        if not self.is_available(): return "Нативная библиотека еще не загружена"
+        try:
+            uapi, local_ip, dns_ip = AWGUAPIParser.parse(conf_text)
+            res = self.lib.StartAWGProxy(uapi.encode(), local_ip.encode(), dns_ip.encode(), PROXY_PORT)
+            return "" if res in (0, -1) else f"Error code: {res}"
+        except Exception as e:
+            Logger.e("Start core error", e)
+            return str(e)
+
+    def stop(self):
+        if self.is_available():
+            try: self.lib.StopAWGProxy()
+            except Exception as e: Logger.e("Stop core error", e)
+
+class TelegramProxy:
+    @staticmethod
+    def cleanup_local_proxies():
+        try:
+            proxy_list = SharedConfig.proxyList
+            if proxy_list:
+                to_remove = [proxy_list.get(i) for i in range(proxy_list.size())
+                             if str(proxy_list.get(i).address) == PROXY_IP and proxy_list.get(i).port == PROXY_PORT]
+                for p in to_remove: SharedConfig.deleteProxy(p)
+
+            curr = SharedConfig.currentProxy
+            if curr and str(curr.address) == PROXY_IP and curr.port == PROXY_PORT:
+                SharedConfig.currentProxy = None
+
+            SharedConfig.proxyEnabled = False
+            MessagesController.getGlobalMainSettings().edit().putBoolean("proxy_enabled", False).apply()
+            SharedConfig.saveProxyList()
+            SharedConfig.saveConfig()
+
+            for ac in range(UserConfig.MAX_ACCOUNT_COUNT):
+                cm = ConnectionsManager.getInstance(ac)
+                if cm: cm.setProxySettings(False, "", 0, "", "", "")
+        except Exception as e:
+            Logger.e("Cleanup Error", e)
+
+    @staticmethod
+    def apply(port: int, enable: bool):
+        try:
+            ed = MessagesController.getGlobalMainSettings().edit()
+            TelegramProxy.cleanup_local_proxies()
+
+            if enable:
+                proxy_obj = find_class("org.telegram.messenger.SharedConfig$ProxyInfo")(PROXY_IP, port, "", "", "")
+                SharedConfig.addProxy(proxy_obj)
+                SharedConfig.currentProxy = proxy_obj
+                SharedConfig.proxyEnabled = True
+                ed.putString("proxy_ip", PROXY_IP).putInt("proxy_port", port) \
+                  .putString("proxy_user", "").putString("proxy_pass", "") \
+                  .putString("proxy_secret", "").putBoolean("proxy_enabled", True)
+            else:
+                SharedConfig.proxyEnabled = False
+                ed.putBoolean("proxy_enabled", False)
+
+            ed.apply()
+            SharedConfig.saveConfig()
+
+            for ac in range(UserConfig.MAX_ACCOUNT_COUNT):
+                cm = ConnectionsManager.getInstance(ac)
+                if cm:
+                    if enable: cm.setProxySettings(True, PROXY_IP, port, "", "", "")
+                    else:      cm.setProxySettings(False, "", 0, "", "", "")
+
+            def notify():
+                try:
+                    from java import jarray
+                    from java.lang import Object
+                    NotificationCenter.getGlobalInstance().postNotificationName(
+                        NotificationCenter.proxySettingsChanged, jarray(Object)(0))
+                except: pass
+            run_on_ui_thread(notify, 300)
+        except Exception as e:
+            Logger.e("Telegram Proxy Error", e)
+
+class ActivityResultHook(MethodHook):
+    def __init__(self, plugin): self.plugin = plugin
+
+    def before_hooked_method(self, param):
+        req_code, res_code, data = param.args[0], param.args[1], param.args[2]
+        if req_code == 13370 and res_code == -1 and data is not None:
+            uri = data.getData()
+            if uri: self.plugin.process_file_uri(uri)
+
+class AmneziaWGPlugin(BasePlugin):
+    __ReqRements__ = {
+        "libawg_proxy": "https://gitflic.ru/project/mandremanovich/soshkidlyaplaginov/blob/raw?file=libawg_proxy.so&inline=false&commit=2abb7c2bc355721c404a3b4a2ceb9dd691a54e3f - need"
+    }
+
+    def on_plugin_load(self):
+        if ReMandre:
+            try: ReMandre.ReMandreCore.initialize(self)
+            except Exception as e: Logger.e("ReMandre init failed", e)
+
+        try:
+            launch_cls = find_class("org.telegram.ui.LaunchActivity")
+            intent_cls = find_class("android.content.Intent")
+            method = launch_cls.getClass().getDeclaredMethod("onActivityResult", Integer.TYPE, Integer.TYPE, intent_cls)
+            self.hook_method(method, ActivityResultHook(self))
+        except Exception as e:
+            Logger.e("Ошибка хука ActivityResult", e)
+
+        self.core = AWGCore()
+        self.monitor_stop = threading.Event()
+        self.monitor_thread = None
+        self.is_vpn_expected = False   
+
+        self.core.init_native(
+            on_success=self._auto_start_vpn,
+            on_error=lambda e: run_on_ui_thread(lambda: BulletinHelper.show_error(f"Ошибка загрузки ядра: {e}"))
+        )
+
+    def on_plugin_unload(self):
+        self._stop_vpn_and_monitor()
+
+    def create_settings(self):
+        conf_name = self.get_setting("awg_conf_name", "Не выбран")
+        return [
+            Header(text="AmneziaWG VPN (Auto mode)"),
+            Text(text="Получить бесплатный конфиг", subtext="Автоматически загрузит конфиг от VPgram",
+                 icon="msg_download", on_click=self.get_free_config),
+            Text(text="Выбрать конфиг (.conf)", subtext=f"Текущий файл: {conf_name}",
+                 icon="msg_folder", on_click=self.open_file_picker),
+            Divider(text="Плагин автоматически получает конфиг и подключает VPN при загрузке."),
+            Divider(text=f"Трафик Telegram направляется через SOCKS5 на порту {PROXY_PORT}"),
+            Divider(),
+            Divider(),
+            Text(text="Мой канал", subtext="Подписаться на @swagnonher", icon="msg_channel", on_click=self.open_channel),
+            Text(text="Обновления плагина", subtext="Следить в @swagnonher", icon="msg_info", on_click=self.open_channel),
+            Text(text="Поддержать автора", subtext="Перейти в @swagnonher", icon="msg_link", on_click=self.open_channel),
+            Divider(),
+            Divider(),
+            Divider(),
+            Text(text="Наш форум ReMandre", subtext="Обсуждения и предрелизы", icon="msg_discuss", on_click=self.open_forum),
+            Text(text="Предрелизы и бетаверсий", subtext="за несколько дней/часов до релиза в канале", icon="msg_help", on_click=self.open_forum),
+            Text(text="Комьюнити", subtext="Обсуждения и помощь", icon="msg_groups", on_click=self.open_forum)
+        ]
+
+    def open_channel(self, view):
+        try:
+            from org.telegram.messenger.browser import Browser
+            from org.telegram.messenger import ApplicationLoader
+            Browser.openUrl(ApplicationLoader.applicationContext, "https://t.me/swagnonher")
+        except Exception as e:
+            Logger.e("Ошибка при открытии ссылки канала", e)
+
+    def open_forum(self, view):
+        try:
+            from org.telegram.messenger.browser import Browser
+            from org.telegram.messenger import ApplicationLoader
+            Browser.openUrl(ApplicationLoader.applicationContext, "https://t.me/mandrelib")
+        except Exception as e:
+            Logger.e("Ошибка при открытии ссылки форума", e)
+
+    def get_free_config(self, view):
+        run_on_ui_thread(lambda: BulletinHelper.show_info("Получение конфига..."))
+
+        def fetch_task():
+            for attempt in range(3):
+                headers = {"X-Device-Id": "".join(random.choices(string.ascii_letters + string.digits, k=16))}
+                try:
+                    resp = requests.get("https://web-api.vpgram.click/client-api/v1/download-anonymous-key",
+                                        headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        filename = "VPgram_Free.conf"
+                        cd = resp.headers.get("content-disposition", "")
+                        if "filename=" in cd:
+                            extracted = cd.split("filename=")[1].strip('"\'\ ')
+                            if extracted: filename = extracted
+
+                        self.set_setting("awg_conf_name", filename)
+                        self.set_setting("awg_conf_content", resp.text)
+                        run_on_ui_thread(lambda: BulletinHelper.show_success(f"Получен конфиг: {filename}"))
+                        run_on_ui_thread(self._start_vpn_with_current_config)
+                        return
+                    Logger.d(f"Attempt {attempt+1} failed: HTTP {resp.status_code}")
+                except Exception as e:
+                    Logger.e(f"Attempt {attempt+1} exception", e)
+            run_on_ui_thread(lambda: BulletinHelper.show_error("Не удалось получить бесплатный конфиг."))
+            run_on_ui_thread(self._start_vpn_with_current_config)
+
+        threading.Thread(target=fetch_task, daemon=True).start()
+
+    def open_file_picker(self, view):
+        try:
+            Intent = jclass("android.content.Intent")
+            intent = Intent(Intent.ACTION_GET_CONTENT)
+            intent.setType("*/*")
+            intent.addCategory(Intent.CATEGORY_OPENABLE)
+            activity = AndroidUtilities.getActivity()
+            if activity: activity.startActivityForResult(intent, 13370)
+        except Exception as e:
+            Logger.e("Ошибка вызова FilePicker", e)
+
+    def process_file_uri(self, uri):
+        try:
+            activity  = AndroidUtilities.getActivity()
+            resolver  = activity.getContentResolver()
+            file_name = uri.getPath().split("/")[-1]
+            if ":" in file_name: file_name = file_name.split(":")[-1]
+            if not file_name.endswith(".conf"): file_name += ".conf"
+
+            reader = jclass("java.io.BufferedReader")(jclass("java.io.InputStreamReader")(resolver.openInputStream(uri)))
+            lines, line = [], reader.readLine()
+            while line is not None:
+                lines.append(str(line))
+                line = reader.readLine()
+            reader.close()
+
+            content = "\n".join(lines) + "\n"
+            self.set_setting("awg_conf_name", file_name)
+            self.set_setting("awg_conf_content", content)
+            run_on_ui_thread(lambda: BulletinHelper.show_success(f"Конфиг {file_name} загружен!"))
+            run_on_ui_thread(self._start_vpn_with_current_config)
+        except Exception as e:
+            Logger.e("Ошибка чтения файла", e)
+            run_on_ui_thread(lambda: BulletinHelper.show_error("Ошибка чтения конфига!"))
+
+    def _auto_start_vpn(self):
+        self._fetch_and_start()
+
+    def _fetch_and_start(self):
+        def fetch():
+            for attempt in range(3):
+                headers = {"X-Device-Id": "".join(random.choices(string.ascii_letters + string.digits, k=16))}
+                try:
+                    resp = requests.get("https://web-api.vpgram.click/client-api/v1/download-anonymous-key",
+                                        headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        filename = "VPgram_Free.conf"
+                        cd = resp.headers.get("content-disposition", "")
+                        if "filename=" in cd:
+                            extracted = cd.split("filename=")[1].strip('"\'\ ')
+                            if extracted: filename = extracted
+                        self.set_setting("awg_conf_name", filename)
+                        self.set_setting("awg_conf_content", resp.text)
+                        run_on_ui_thread(lambda: BulletinHelper.show_success(f"Auto-fetched config: {filename}"))
+                        run_on_ui_thread(self._start_vpn_with_current_config)
+                        return
+                except Exception as e:
+                    Logger.e(f"Auto fetch attempt {attempt+1} failed", e)
+            run_on_ui_thread(self._start_vpn_with_current_config)
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _start_vpn_with_current_config(self):
+        conf_content = self.get_setting("awg_conf_content", "")
+        if not conf_content:
+            run_on_ui_thread(lambda: BulletinHelper.show_error("Нет сохранённого конфига. Сначала получите или выберите .conf файл."))
+            return
+        self._connect()
+
+    def _connect(self):
+        conf_content = self.get_setting("awg_conf_content", "")
+        if not conf_content:
+            Logger.e("_connect: no config content")
+            return
+
+        def proceed():
+            err = self.core.start(conf_content)
+            if err:
+                run_on_ui_thread(lambda: BulletinHelper.show_error(f"Ошибка ядра: {err}"))
+                self.is_vpn_expected = False
+                return
+            self.is_vpn_expected = True
+            TelegramProxy.apply(PROXY_PORT, True)
+            run_on_ui_thread(lambda: BulletinHelper.show_success(f"AWG VPN подключен (порт {PROXY_PORT})"))
+            self._start_monitor()
+
+        if not self.core.is_available():
+            run_on_ui_thread(lambda: BulletinHelper.show_info("Ядро ещё не загружено, инициализация..."))
+            self.core.init_native(on_success=proceed, on_error=lambda e: run_on_ui_thread(lambda: BulletinHelper.show_error(f"Ядро не загружено: {e}")))
+        else:
+            proceed()
+
+    def _disconnect(self, silent=False):
+        self.is_vpn_expected = False
+        self._stop_monitor()
+        self.core.stop()
+        TelegramProxy.apply(0, False)
+        if not silent:
+            run_on_ui_thread(lambda: BulletinHelper.show_info("AWG VPN отключен."))
+
+    def _stop_vpn_and_monitor(self):
+        self._stop_monitor()
+        self.core.stop()
+        TelegramProxy.apply(0, False)
+        self.is_vpn_expected = False
+
+    def _start_monitor(self):
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            return
+        self.monitor_stop.clear()
+        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.monitor_thread.start()
+
+    def _stop_monitor(self):
+        self.monitor_stop.set()
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=2)
+        self.monitor_thread = None
+
+    def _monitor_loop(self):
+        while not self.monitor_stop.is_set():
+            time.sleep(HEARTBEAT_INTERVAL)
+            if not self.is_vpn_expected:
+                continue
+            if not self._is_proxy_working():
+                Logger.d("Proxy/VPN не отвечает, выполняю переподключение...")
+                run_on_ui_thread(self._reconnect_vpn)
+
+    def _is_proxy_working(self) -> bool:
+        """Проверяет работоспособность прокси через нативный SOCKS5 handshake (без внешних зависимостей)"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(HEARTBEAT_TIMEOUT)
+            s.connect((PROXY_IP, PROXY_PORT))
+            # SOCKS5 Hello: Version 5, 1 Method, No Authentication
+            s.sendall(b"\x05\x01\x00")
+            resp = s.recv(2)
+            s.close()
+            # Должно вернуться \x05\x00 (Версия 5, Выбран метод "Без аутентификации")
+            return resp == b"\x05\x00"
+        except Exception as e:
+            Logger.d(f"Мониторинг: локальный прокси не отвечает ({e})")
+        return False
+
+    def _reconnect_vpn(self):
+        Logger.d("Переподключение VPN...")
+        self._disconnect(silent=True)
+        time.sleep(1)
+        self._connect()
