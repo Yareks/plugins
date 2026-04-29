@@ -1,0 +1,2 @@
+MeowWG - Yareks/plugins/amneziia.plugin
+Banner - Yareks/plugins/dwd.png
