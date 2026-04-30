@@ -22,7 +22,7 @@ from org.telegram.messenger import AndroidUtilities
 
 __id__ = "ReMeow"
 __name__ = "ReMeow Lib" 
-__version__ = "1.8.2"
+__version__ = "1.8.3"
 __icon__ = "Plugin2/1"
 __author__ = "@playerqwe"
 __description__ = "Библиотека ReMeow (основа от @swagnonher Mandre Lib)"
