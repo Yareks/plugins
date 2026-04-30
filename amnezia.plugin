@@ -14,15 +14,15 @@ from org.telegram.messenger import AndroidUtilities, SharedConfig, MessagesContr
 from org.telegram.tgnet import ConnectionsManager
 
 try:
-    import ReMandre
+    import ReMeow
 except ImportError:
-    ReMandre = None
+    ReMeow = None
 
 __id__ = "MeowWG"
 __name__ = "MeowWG"
 __description__ = "Обход блокировок телеграма (основа от @swagnonher)"
 __author__ = "@playerqwe"
-__version__ = "1.3"
+__version__ = "1.0"
 __icon__ = "Plugin2/0"
 __min_version__ = "11.12.0"
 
@@ -90,8 +90,8 @@ class AWGCore:
         def task():
             self.is_downloading = True
             try:
-                if not ReMandre: raise Exception("ReMandre не установлен!")
-                loader = ReMandre.ReLoad.get()
+                if not ReMeow: raise Exception("ReMeow не установлен!")
+                loader = ReMeow.ReLoad.get()
 
                 for _ in range(40):
                     if "libawg_proxy" in loader.loaded_modules:
@@ -100,11 +100,11 @@ class AWGCore:
                         self.lib.StartAWGProxy.restype  = ctypes.c_int
                         self.lib.StopAWGProxy.argtypes  = []
                         self.lib.StopAWGProxy.restype   = ctypes.c_int
-                        Logger.d("Core initialized via ReMandre")
+                        Logger.d("Core initialized via ReMeow")
                         break
                     time.sleep(0.5)
                 else:
-                    raise Exception("Таймаут ожидания загрузки libawg_proxy.so через ReMandre")
+                    raise Exception("Таймаут ожидания загрузки libawg_proxy.so через ReMeow")
 
                 self.is_downloading = False
                 if on_success: on_success()
@@ -211,9 +211,9 @@ class AmneziaWGPlugin(BasePlugin):
     }
 
     def on_plugin_load(self):
-        if ReMandre:
-            try: ReMandre.ReMandreCore.initialize(self)
-            except Exception as e: Logger.e("ReMandre init failed", e)
+        if ReMeow:
+            try: ReMeow.ReMeowCore.initialize(self)
+            except Exception as e: Logger.e("ReMeow init failed", e)
 
         try:
             launch_cls = find_class("org.telegram.ui.LaunchActivity")
@@ -254,7 +254,7 @@ class AmneziaWGPlugin(BasePlugin):
             Divider(),
             Divider(),
             Divider(),
-            Text(text="Наш форум ReMandre", subtext="Обсуждения и предрелизы", icon="msg_discuss", on_click=self.open_forum),
+            Text(text="Наш форум ReMeow", subtext="Обсуждения и предрелизы", icon="msg_discuss", on_click=self.open_forum),
             Text(text="Предрелизы и бетаверсий", subtext="за несколько дней/часов до релиза в канале", icon="msg_help", on_click=self.open_forum),
             Text(text="Комьюнити", subtext="Обсуждения и помощь", icon="msg_groups", on_click=self.open_forum)
         ]
