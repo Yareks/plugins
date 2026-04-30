@@ -22,7 +22,7 @@ from org.telegram.messenger import AndroidUtilities
 
 __id__ = "ReMeow"
 __name__ = "ReMeow Lib" 
-__version__ = "1.8.3"
+__version__ = "1.8.4"
 __icon__ = "Plugin2/1"
 __author__ = "@playerqwe"
 __description__ = "Библиотека ReMeow (основа от @swagnonher Mandre Lib)"
@@ -1521,7 +1521,16 @@ class ReMeowLib(BasePlugin):
 
     def on_plugin_load(self):
         if is_safe_mode(): mlog("SAFE MODE ACTIVE: ReMeow Core will not load native extensions."); return
-        mlog("Plugin initializing..."); (sys.modules.update({"ReMeow": sys.modules[self.__class__.__module__]}) if self.__class__.__module__ in sys.modules else None)
+        mlog("Plugin initializing...")
+        
+        # Регистрируем себя в sys.modules
+        try:
+            sys.modules["ReMeow"] = sys.modules[self.__class__.__module__]
+        except:
+            pass
+        
+        # Проверяем отложенное обновление
+        self._check_pending_update()
         
         loader = ReLoad.get()
         banner_path = os.path.join(loader.root, "dwd_banner.png")
@@ -1544,7 +1553,17 @@ class ReMeowLib(BasePlugin):
         threading.Thread(target=self._perform_initial_check, daemon=True).start()
         threading.Thread(target=self._precache_stickers, daemon=True).start()
         threading.Thread(target=self._start_banner_rotation, daemon=True).start()
-        # self._check_self_version_on_gh не нужен, т.к. версия теперь через plugin.txt
+
+    def _check_pending_update(self):
+        """Проверяет наличие отложенного обновления"""
+        try:
+            update_flag = os.path.join(ReLoad.get().root, "update_ready.flag")
+            if os.path.exists(update_flag):
+                mlog("Обнаружен флаг обновления. Плагин будет обновлён при перезагрузке.")
+                # Флаг уже установлен, ждём перезапуска
+                run_on_ui_thread(lambda: BulletinHelper.show_info("ReMeow обновлён! Перезагрузите приложение для завершения."))
+        except Exception as e:
+            mlog(f"Check pending update error: {e}")
 
     def _perform_initial_check(self):
         mlog("ReMeow: Выполнение начальной синхронизации...")
@@ -1593,24 +1612,24 @@ class ReMeowLib(BasePlugin):
                             threading.Thread(target=self._sync_meow_wg, args=(u, r, clean_p), daemon=True).start()
 
                     elif key == "Lib":
-                        # full_val может быть URL или вида "user/repo/path"
                         remote_file = full_val
                         if not remote_file.startswith("http"):
                             parts = remote_file.split("/", 2)
                             if len(parts) >= 3:
                                 user, repo, file_path = parts[0], parts[1], parts[2]
                                 remote_file = f"https://raw.githubusercontent.com/{user}/{repo}/main/{file_path}"
-                        mlog(f"Обновление библиотеки из: {remote_file}")
+                        mlog(f"Проверка обновления библиотеки из: {remote_file}")
                         self._check_and_update_self(remote_file)
 
             self.set_setting("ds_first_init_done", True)
         except Exception as e: mlog(f"Init error: {e}")
 
     def _check_and_update_self(self, remote_url):
-        """Скачивает удалённый .plugin файл, проверяет версию и обновляется, если новее"""
+        """Скачивает удалённый .plugin файл, проверяет версию и устанавливает флаг обновления"""
         try:
             temp_dir = ReLoad.get().root
             temp_path = os.path.join(temp_dir, "remeow_update.tmp")
+            
             if not SafeDownloader.download(remote_url, temp_path):
                 mlog("Не удалось скачать файл обновления")
                 return
@@ -1629,21 +1648,79 @@ class ReMeowLib(BasePlugin):
                 os.remove(temp_path)
                 return
 
-            mlog(f"Обнаружена новая версия {remote_version} (текущая {__version__}). Обновляем...")
-            current_path = sys.modules[self.__class__.__module__].__file__
+            mlog(f"Обнаружена новая версия {remote_version} (текущая {__version__}). Подготовка обновления...")
+            
+            # Получаем путь к текущему плагину
+            current_path = None
+            try:
+                current_path = sys.modules[self.__class__.__module__].__file__
+            except:
+                pass
+            
             if not current_path:
-                mlog("Не удалось определить путь к текущему плагину")
+                # Пробуем найти .plugin файл в директории плагинов
+                plugin_dir = "/storage/emulated/0/Exteragram/Plugins"
+                if os.path.exists(plugin_dir):
+                    for f in os.listdir(plugin_dir):
+                        if f.endswith(".plugin") and "ReMeow" in f:
+                            current_path = os.path.join(plugin_dir, f)
+                            break
+            
+            if not current_path:
+                mlog("Не удалось определить путь к текущему плагину, сохраняем обновление во временную директорию")
+                # Сохраняем обновлённый файл
+                new_path = os.path.join(temp_dir, "ReMeow_updated.plugin")
+                shutil.copy2(temp_path, new_path)
+                run_on_ui_thread(lambda: BulletinHelper.show_info(f"Обновление ReMeow v{remote_version} сохранено. Установите вручную из {new_path}"))
                 os.remove(temp_path)
                 return
 
-            shutil.copy2(temp_path, current_path)
+            # Сохраняем обновлённый файл рядом с текущим с суффиксом .new
+            new_plugin_path = current_path + ".new"
+            shutil.copy2(temp_path, new_plugin_path)
             os.remove(temp_path)
-            mlog("Файл обновлён. Требуется перезапуск приложения.")
-            run_on_ui_thread(lambda: BulletinHelper.show_success("ReMeow обновлён! Перезапустите приложение для завершения."))
+            
+            # Создаём скрипт для замены при следующей загрузке
+            self._schedule_plugin_replace(current_path, new_plugin_path)
+            
+            mlog(f"Обновление подготовлено. При следующем запуске будет установлена версия {remote_version}")
+            run_on_ui_thread(lambda: BulletinHelper.show_success(f"Обновление ReMeow v{remote_version} загружено! Перезапустите приложение для завершения."))
+            
         except Exception as e:
             mlog(f"Ошибка обновления: {e}")
-            try: os.remove(temp_path)
-            except: pass
+            try: 
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except: 
+                pass
+
+    def _schedule_plugin_replace(self, current_path, new_plugin_path):
+        """Создаёт скрипт для замены плагина при следующем запуске"""
+        try:
+            loader_root = ReLoad.get().root
+            replace_script = os.path.join(loader_root, "replace_plugin.sh")
+            
+            script_content = f'''#!/system/bin/sh
+# ReMeow self-update script
+sleep 2
+if [ -f "{new_plugin_path}" ]; then
+    cp "{new_plugin_path}" "{current_path}"
+    rm "{new_plugin_path}"
+    rm "$0"
+fi
+'''
+            with open(replace_script, 'w') as f:
+                f.write(script_content)
+            os.chmod(replace_script, 0o755)
+            
+            # Также создаём флаг для проверки при загрузке плагина
+            update_flag = os.path.join(loader_root, "update_ready.flag")
+            with open(update_flag, 'w') as f:
+                f.write(current_path + "\n" + new_plugin_path)
+                
+            mlog(f"Скрипт замены создан: {replace_script}")
+        except Exception as e:
+            mlog(f"Ошибка создания скрипта замены: {e}")
 
     def _sync_meow_wg(self, user, repo, path):
         try:
@@ -1688,21 +1765,15 @@ class ReMeowLib(BasePlugin):
                     PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
                     engine = PC.engines.get("python")
                     if engine:
-                        class EnableCallback(dynamic_proxy(jclass("org.telegram.messenger.Utilities$Callback"))):
-                            def __init__(self, plugin_id):
-                                super().__init__()
-                                self.plugin_id = plugin_id
-                            def run(self, error):
-                                if not error and enable_after:
-                                    run_on_ui_thread(lambda: BulletinHelper.show_info("Включение MeowWG..."))
-                                    def enable_plugin():
-                                        time.sleep(1.5)
-                                        PC.setPluginEnabled(self.plugin_id, True, None)
-                                        run_on_ui_thread(lambda: BulletinHelper.show_success("MeowWG включён!"))
-                                    threading.Thread(target=enable_plugin, daemon=True).start()
-                        engine.loadPluginFromFile(dest, None, EnableCallback("MeowWG"))
-                    else:
-                        mlog("Python engine not found, cannot load plugin")
+                        # Загружаем плагин
+                        engine.loadPluginFromFile(dest, None, None)
+                        # Если нужно включить, делаем это с задержкой
+                        if enable_after:
+                            def enable_plugin():
+                                time.sleep(2)
+                                PC.setPluginEnabled("MeowWG", True, None)
+                                run_on_ui_thread(lambda: BulletinHelper.show_success("MeowWG установлен и включён!"))
+                            threading.Thread(target=enable_plugin, daemon=True).start()
                 except Exception as e:
                     mlog(f"Auto-load/enable MeowWG error: {e}")
         return success
