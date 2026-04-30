@@ -22,7 +22,7 @@ __id__ = "MeowWG"
 __name__ = "MeowWG"
 __description__ = "Обход блокировок телеграма (основа от @swagnonher)"
 __author__ = "@playerqwe"
-__version__ = "1.2"
+__version__ = "1.0"
 __icon__ = "Plugin2/0"
 __min_version__ = "11.12.0"
 
