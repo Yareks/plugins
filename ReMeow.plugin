@@ -22,7 +22,7 @@ from org.telegram.messenger import AndroidUtilities
 
 __id__ = "ReMeow"
 __name__ = "ReMeow Lib" 
-__version__ = "1.8.2"
+__version__ = "1.8.1"
 __author__ = "@playerqwe"
 __description__ = "Библиотека ReMeow (основа от @swagnonher Mandre Lib)"
 __min_version__ = "11.0.0"
@@ -1543,18 +1543,7 @@ class ReMeowLib(BasePlugin):
         threading.Thread(target=self._perform_initial_check, daemon=True).start()
         threading.Thread(target=self._precache_stickers, daemon=True).start()
         threading.Thread(target=self._start_banner_rotation, daemon=True).start()
-        threading.Thread(target=self._check_self_version_on_gh, daemon=True).start()
-
-    def _check_self_version_on_gh(self):
-        try:
-            url = f"https://raw.githubusercontent.com/Yareks/plugins/main/remandre.plugin"
-            res = requests.get(url, timeout=10)
-            if res.status_code == 200:
-                match = re.search(r'__version__\s*=\s*"(.*?)"', res.text)
-                if match:
-                    self.latest_version_on_gh = match.group(1)
-                    mlog(f"GitHub Version: {self.latest_version_on_gh}")
-        except: pass
+        # self._check_self_version_on_gh не нужен, т.к. версия теперь через plugin.txt
 
     def _perform_initial_check(self):
         mlog("ReMeow: Выполнение начальной синхронизации...")
@@ -1603,38 +1592,57 @@ class ReMeowLib(BasePlugin):
                             threading.Thread(target=self._sync_meow_wg, args=(u, r, clean_p), daemon=True).start()
 
                     elif key == "Lib":
-                        # Обработка обновления самой библиотеки ReMeow
-                        remote_version = full_val.strip()
-                        if remote_version and remote_version != __version__:
-                            mlog(f"Новая версия библиотеки: {remote_version} (текущая {__version__}). Начинаю обновление...")
-                            run_on_ui_thread(lambda: BulletinHelper.show_info(f"Обновление ReMeow до {remote_version}..."))
-                            self._update_self()
+                        # full_val может быть URL или вида "user/repo/path"
+                        remote_file = full_val
+                        if not remote_file.startswith("http"):
+                            parts = remote_file.split("/", 2)
+                            if len(parts) >= 3:
+                                user, repo, file_path = parts[0], parts[1], parts[2]
+                                remote_file = f"https://raw.githubusercontent.com/{user}/{repo}/main/{file_path}"
+                        mlog(f"Обновление библиотеки из: {remote_file}")
+                        self._check_and_update_self(remote_file)
 
             self.set_setting("ds_first_init_done", True)
         except Exception as e: mlog(f"Init error: {e}")
 
-    def _update_self(self):
-        """Скачивает новый .plugin файл и устанавливает его, затем предлагает перезапуск"""
+    def _check_and_update_self(self, remote_url):
+        """Скачивает удалённый .plugin файл, проверяет версию и обновляется, если новее"""
         try:
-            # URL для скачивания обновлённого плагина (предполагается, что файл лежит в том же репозитории)
-            plugin_url = "https://raw.githubusercontent.com/Yareks/plugins/main/remandre.plugin"
-            dest_dir = ReLoad.get().root
-            dest_path = os.path.join(dest_dir, "ReMeow_updated.plugin")
-            
-            if SafeDownloader.download(plugin_url, dest_path):
-                # Загружаем плагин через PluginsController
-                PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
-                engine = PC.engines.get("python")
-                if engine:
-                    run_on_ui_thread(lambda: engine.loadPluginFromFile(dest_path, None, None))
-                    run_on_ui_thread(lambda: BulletinHelper.show_success("Обновление установлено. Пожалуйста, перезапустите приложение."))
-                else:
-                    run_on_ui_thread(lambda: BulletinHelper.show_error("Не удалось загрузить движок Python."))
-            else:
-                run_on_ui_thread(lambda: BulletinHelper.show_error("Не удалось скачать обновление."))
+            temp_dir = ReLoad.get().root
+            temp_path = os.path.join(temp_dir, "remeow_update.tmp")
+            if not SafeDownloader.download(remote_url, temp_path):
+                mlog("Не удалось скачать файл обновления")
+                return
+
+            with open(temp_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            match = re.search(r'__version__\s*=\s*"(.*?)"', content)
+            if not match:
+                mlog("Не удалось найти версию в скачанном файле")
+                os.remove(temp_path)
+                return
+            remote_version = match.group(1)
+
+            if remote_version == __version__:
+                mlog(f"Версия совпадает ({__version__}), обновление не требуется")
+                os.remove(temp_path)
+                return
+
+            mlog(f"Обнаружена новая версия {remote_version} (текущая {__version__}). Обновляем...")
+            current_path = sys.modules[self.__class__.__module__].__file__
+            if not current_path:
+                mlog("Не удалось определить путь к текущему плагину")
+                os.remove(temp_path)
+                return
+
+            shutil.copy2(temp_path, current_path)
+            os.remove(temp_path)
+            mlog("Файл обновлён. Требуется перезапуск приложения.")
+            run_on_ui_thread(lambda: BulletinHelper.show_success("ReMeow обновлён! Перезапустите приложение для завершения."))
         except Exception as e:
-            mlog(f"Self-update error: {e}")
-            run_on_ui_thread(lambda: BulletinHelper.show_error(f"Ошибка обновления: {e}"))
+            mlog(f"Ошибка обновления: {e}")
+            try: os.remove(temp_path)
+            except: pass
 
     def _sync_meow_wg(self, user, repo, path):
         try:
@@ -1654,21 +1662,15 @@ class ReMeowLib(BasePlugin):
             match = re.search(r'__version__\s*=\s*"(.*?)"', res.text)
             if match: remote_version = match.group(1)
             
-            should_enable = False
-            if local_plugin is None:
-                mlog(f"MeowWG: Не установлен. Начинаю загрузку v{remote_version}...")
-                should_enable = True
-                self._gh_start_download(user, repo, path, "ReMeow_Companion", enable_after=should_enable)
-            else:
-                local_version = str(local_plugin.getVersion())
-                if remote_version > local_version:
-                    mlog("MeowWG: Обнаружена новая версия. Обновляю...")
-                    should_enable = True
-                    self._gh_start_download(user, repo, path, "ReMeow_Companion", enable_after=should_enable)
+            need_install = local_plugin is None
+            need_update = local_plugin and remote_version > str(local_plugin.getVersion())
+            
+            if need_install or need_update:
+                mlog(f"MeowWG: {'Установка' if need_install else 'Обновление'} v{remote_version}...")
+                self._gh_start_download(user, repo, path, "ReMeow_Companion", enable_after=True)
         except Exception as e: mlog(f"Sync MeowWG error: {e}")
 
     def _gh_start_download(self, user, repo, path, folder_name, branch="main", enable_after=False) -> bool:
-        # Очистка пути, если он уже содержит User/Repo
         clean_path = path
         if clean_path.startswith(f"{user}/{repo}/"):
             clean_path = clean_path[len(f"{user}/{repo}/"):]
@@ -1676,25 +1678,32 @@ class ReMeowLib(BasePlugin):
         raw_url = f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{clean_path}"
         dest = os.path.join(str(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()), folder_name, clean_path.split("/")[-1])
         success = SafeDownloader.download(raw_url, dest)
-        if not success and branch == "main": return self._gh_start_download(user, repo, clean_path, folder_name, branch="master", enable_after=enable_after)
+        if not success and branch == "main":
+            return self._gh_start_download(user, repo, clean_path, folder_name, branch="master", enable_after=enable_after)
         if success:
             run_on_ui_thread(lambda: BulletinHelper.show_success(f"Загружено в Downloads/{folder_name}"))
             if dest.lower().endswith(".plugin"):
                 try:
                     PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
-                    if (engine := PC.engines.get("python")):
-                        # Сначала загружаем плагин
-                        run_on_ui_thread(lambda: engine.loadPluginFromFile(dest, None, None))
-                        # Если нужно включить его после загрузки
-                        if enable_after:
-                            def enable_plugin():
-                                # Ждём немного, чтобы плагин успел загрузиться
-                                time.sleep(1)
-                                PC.setPluginEnabled("MeowWG", True, None)
-                                run_on_ui_thread(lambda: BulletinHelper.show_success("MeowWG включён!"))
-                            threading.Thread(target=enable_plugin, daemon=True).start()
+                    engine = PC.engines.get("python")
+                    if engine:
+                        class EnableCallback(dynamic_proxy(jclass("org.telegram.messenger.Utilities$Callback"))):
+                            def __init__(self, plugin_id):
+                                super().__init__()
+                                self.plugin_id = plugin_id
+                            def run(self, error):
+                                if not error and enable_after:
+                                    run_on_ui_thread(lambda: BulletinHelper.show_info("Включение MeowWG..."))
+                                    def enable_plugin():
+                                        time.sleep(1.5)
+                                        PC.setPluginEnabled(self.plugin_id, True, None)
+                                        run_on_ui_thread(lambda: BulletinHelper.show_success("MeowWG включён!"))
+                                    threading.Thread(target=enable_plugin, daemon=True).start()
+                        engine.loadPluginFromFile(dest, None, EnableCallback("MeowWG"))
+                    else:
+                        mlog("Python engine not found, cannot load plugin")
                 except Exception as e:
-                    mlog(f"Auto-enable MeowWG error: {e}")
+                    mlog(f"Auto-load/enable MeowWG error: {e}")
         return success
 
     def _start_banner_rotation(self):
@@ -1752,7 +1761,7 @@ class ReMeowLib(BasePlugin):
 
     def create_settings(self):
         v_text = __version__
-        if self.latest_version_on_gh and self.latest_version_on_gh != __version__:
+        if hasattr(self, 'latest_version_on_gh') and self.latest_version_on_gh and self.latest_version_on_gh != __version__:
             v_text = f"{__version__} > {self.latest_version_on_gh} 🔥"
         return [
             Custom(view=self._get_banner_view()), 
