@@ -1610,20 +1610,37 @@ class ReMeowLib(BasePlugin):
                             self.set_setting("ds_comp_repo", r)
                             self.set_setting("ds_comp_path", clean_p)
                             threading.Thread(target=self._sync_meow_wg, args=(u, r, clean_p), daemon=True).start()
-
-                    elif key == "Lib":
-                        remote_file = full_val
-                        if not remote_file.startswith("http"):
-                            parts = remote_file.split("/", 2)
+                    elif key == "Lib installer":
+                        # Установщик: скачиваем и запускаем мини-плагин, который обновит ReMeow
+                        remote_installer = full_val
+                        if not remote_installer.startswith("http"):
+                            parts = remote_installer.split("/", 2)
                             if len(parts) >= 3:
                                 user, repo, file_path = parts[0], parts[1], parts[2]
-                                remote_file = f"https://raw.githubusercontent.com/{user}/{repo}/main/{file_path}"
-                        mlog(f"Проверка обновления библиотеки из: {remote_file}")
-                        self._check_and_update_self(remote_file)
+                                remote_installer = f"https://raw.githubusercontent.com/{user}/{repo}/main/{file_path}"
+                        mlog(f"Скачивание установщика обновления: {remote_installer}")
+                        self._download_and_run_installer(remote_installer)
 
             self.set_setting("ds_first_init_done", True)
         except Exception as e: mlog(f"Init error: {e}")
-
+    def _download_and_run_installer(self, installer_url):
+        """Скачивает установщик и загружает его как плагин"""
+        try:
+            installer_dir = ReLoad.get().root
+            installer_path = os.path.join(installer_dir, "ReMeow_Updater.plugin")
+            if SafeDownloader.download(installer_url, installer_path):
+                mlog("Установщик загружен, запускаем...")
+                PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
+                engine = PC.engines.get("python")
+                if engine:
+                    engine.loadPluginFromFile(installer_path, None, None)
+                    mlog("Установщик запущен, он выполнит обновление ReMeow")
+                else:
+                    mlog("Python engine not found")
+            else:
+                mlog("Не удалось скачать установщик")
+        except Exception as e:
+            mlog(f"Ошибка загрузки установщика: {e}")
     def _check_and_update_self(self, remote_url):
         """Скачивает удалённый .plugin файл, проверяет версию и устанавливает флаг обновления"""
         try:
