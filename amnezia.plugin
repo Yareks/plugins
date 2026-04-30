@@ -14,15 +14,15 @@ from org.telegram.messenger import AndroidUtilities, SharedConfig, MessagesContr
 from org.telegram.tgnet import ConnectionsManager
 
 try:
-    import ReMeow
+    import ReMandre
 except ImportError:
-    ReMeow = None
+    ReMandre = None
 
 __id__ = "MeowWG"
 __name__ = "MeowWG"
 __description__ = "Обход блокировок телеграма (основа от @swagnonher)"
 __author__ = "@playerqwe"
-__version__ = "1.0"
+__version__ = "1.1"
 __icon__ = "Plugin2/0"
 __min_version__ = "11.12.0"
 
