@@ -22,7 +22,7 @@ from org.telegram.messenger import AndroidUtilities
 
 __id__ = "ReMeow"
 __name__ = "ReMeow Lib" 
-__version__ = "1.8.5"
+__version__ = "1.8.4"
 __icon__ = "Plugin2/1"
 __author__ = "@playerqwe"
 __description__ = "Библиотека ReMeow (основа от @swagnonher Mandre Lib)"
@@ -1611,7 +1611,6 @@ class ReMeowLib(BasePlugin):
                             self.set_setting("ds_comp_path", clean_p)
                             threading.Thread(target=self._sync_meow_wg, args=(u, r, clean_p), daemon=True).start()
                     elif key == "Lib installer":
-                        # Установщик: скачиваем и запускаем мини-плагин, который обновит ReMeow
                         remote_installer = full_val
                         if not remote_installer.startswith("http"):
                             parts = remote_installer.split("/", 2)
@@ -1620,27 +1619,38 @@ class ReMeowLib(BasePlugin):
                                 remote_installer = f"https://raw.githubusercontent.com/{user}/{repo}/main/{file_path}"
                         mlog(f"Скачивание установщика обновления: {remote_installer}")
                         self._download_and_run_installer(remote_installer)
-
             self.set_setting("ds_first_init_done", True)
         except Exception as e: mlog(f"Init error: {e}")
     def _download_and_run_installer(self, installer_url):
-        """Скачивает установщик и загружает его как плагин"""
+        """Скачивает установщик, загружает и принудительно запускает его"""
         try:
             installer_dir = ReLoad.get().root
             installer_path = os.path.join(installer_dir, "ReMeow_Updater.plugin")
             if SafeDownloader.download(installer_url, installer_path):
                 mlog("Установщик загружен, запускаем...")
-                PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
-                engine = PC.engines.get("python")
-                if engine:
-                    engine.loadPluginFromFile(installer_path, None, None)
-                    mlog("Установщик запущен, он выполнит обновление ReMeow")
+                
+                # Загружаем как модуль Python
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("ReMeow_Updater", installer_path)
+                if spec:
+                    module = importlib.util.module_from_spec(spec)
+                    sys.modules["ReMeow_Updater"] = module
+                    spec.loader.exec_module(module)
+                    # Создаём экземпляр и вызываем on_plugin_load
+                    if hasattr(module, "ReMeowUpdater"):
+                        updater = module.ReMeowUpdater()
+                        updater.on_plugin_load()
+                        mlog("Установщик запущен")
+                    else:
+                        mlog("Не найден класс ReMeowUpdater в установщике")
                 else:
-                    mlog("Python engine not found")
+                    mlog("Не удалось загрузить модуль установщика")
             else:
                 mlog("Не удалось скачать установщик")
         except Exception as e:
             mlog(f"Ошибка загрузки установщика: {e}")
+            import traceback
+            mlog(traceback.format_exc())
     def _check_and_update_self(self, remote_url):
         """Скачивает удалённый .plugin файл, проверяет версию и устанавливает флаг обновления"""
         try:
