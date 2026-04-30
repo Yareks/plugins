@@ -1,4 +1,3 @@
-
 import os, sys, time, shutil, requests, re, threading
 from java import jclass
 from base_plugin import BasePlugin
@@ -18,107 +17,296 @@ def mlog(msg):
 class ReMeowUpdater(BasePlugin):
     def on_plugin_load(self):
         mlog("Запущен установщик обновления ReMeow")
+        # Небольшая задержка перед началом
         threading.Thread(target=self._do_update, daemon=True).start()
 
-    def _download_file(self, url, dest):
+    def _download_to_memory(self, url):
+        """Скачивает файл в память и возвращает содержимое"""
         try:
+            mlog(f"Скачивание: {url}")
             r = requests.get(url, stream=True, timeout=30)
             r.raise_for_status()
-            with open(dest, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            return os.path.getsize(dest) > 1024
+            content = r.content
+            mlog(f"Скачано {len(content)} байт")
+            return content
         except Exception as e:
             mlog(f"Download error: {e}")
-            return False
+            return None
+
+    def _find_remeow_path(self):
+        """Находит путь к загруженному ReMeow плагину"""
+        mlog("Поиск ReMeow плагина...")
+        
+        # Сначала проверяем загруженные модули
+        if "ReMeow" in sys.modules:
+            mod = sys.modules["ReMeow"]
+            if hasattr(mod, "__file__"):
+                path = mod.__file__
+                if path and os.path.exists(path):
+                    mlog(f"Найден через sys.modules: {path}")
+                    return path
+        
+        # Проверяем стандартные директории плагинов
+        plugin_dirs = [
+            "/storage/emulated/0/Exteragram/Plugins",
+            "/data/data/org.telegram.messenger/files/plugins",
+            "/data/data/com.radolyn.ayugram/files/plugins",
+        ]
+        
+        for plugin_dir in plugin_dirs:
+            if os.path.exists(plugin_dir):
+                mlog(f"Проверка директории: {plugin_dir}")
+                for f in os.listdir(plugin_dir):
+                    if f.endswith(".plugin") and "ReMeow" in f and "Updater" not in f:
+                        path = os.path.join(plugin_dir, f)
+                        mlog(f"Найден в {plugin_dir}: {path}")
+                        return path
+        
+        # Проверяем временную директорию
+        try:
+            ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
+            cache_dir = ctx.getCacheDir().getAbsolutePath()
+            mlog(f"Проверка кеша: {cache_dir}")
+            for f in os.listdir(cache_dir):
+                if f.endswith(".plugin") and "ReMeow" in f and "Updater" not in f:
+                    path = os.path.join(cache_dir, f)
+                    mlog(f"Найден в кеше: {path}")
+                    return path
+        except Exception as e:
+            mlog(f"Ошибка поиска в кеше: {e}")
+        
+        mlog("ReMeow не найден!")
+        return None
+
+    def _get_plugin_path_from_engine(self):
+        """Пытается получить путь через PluginsController"""
+        try:
+            PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
+            engine = PC.engines.get("python")
+            if engine:
+                # Пробуем получить путь через engine
+                plugin_path = engine.getPluginPath("ReMeow")
+                if plugin_path and os.path.exists(str(plugin_path)):
+                    mlog(f"Найден через engine: {plugin_path}")
+                    return str(plugin_path)
+        except Exception as e:
+            mlog(f"Engine search error: {e}")
+        return None
+
+    def _get_version_from_file(self, file_path):
+        """Извлекает версию из файла плагина"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            match = re.search(r'__version__\s*=\s*"(.*?)"', content)
+            if match:
+                return match.group(1)
+        except Exception as e:
+            mlog(f"Read version error: {e}")
+        return "0.0.0"
+
+    def _reload_plugin(self, plugin_path):
+        """Перезагружает плагин без перезапуска приложения"""
+        try:
+            PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
+            
+            # Выгружаем старую версию
+            mlog("Выгрузка старой версии ReMeow...")
+            PC.unloadPlugin("ReMeow")
+            time.sleep(1)
+            
+            # Очищаем кеш модуля
+            if "ReMeow" in sys.modules:
+                del sys.modules["ReMeow"]
+            
+            # Загружаем новую
+            mlog("Загрузка новой версии ReMeow...")
+            engine = PC.engines.get("python")
+            if engine:
+                engine.loadPluginFromFile(plugin_path, None, None)
+                mlog("Плагин перезагружен")
+                return True
+        except Exception as e:
+            mlog(f"Reload error: {e}")
+        return False
+
+    def _notify(self, message, is_error=False):
+        """Показывает уведомление"""
+        def do_notify():
+            if is_error:
+                BulletinHelper.show_error(message)
+            else:
+                BulletinHelper.show_success(message)
+        run_on_ui_thread(do_notify)
 
     def _do_update(self):
+        temp_path = None
+        update_success = False
+        new_version = None
+        
         try:
-            # Определяем путь к текущему плагину ReMeow
-            remeow_path = None
-            if "ReMeow" in sys.modules:
-                mod = sys.modules["ReMeow"]
-                if hasattr(mod, "__file__"):
-                    remeow_path = mod.__file__
+            # Получаем cache_dir
+            ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
+            cache_dir = ctx.getCacheDir().getAbsolutePath()
+            mlog(f"Cache dir: {cache_dir}")
+            
+            # Находим текущий ReMeow (пробуем разные способы)
+            remeow_path = self._find_remeow_path()
             if not remeow_path:
-                plugin_dir = "/storage/emulated/0/Exteragram/Plugins"
-                if os.path.exists(plugin_dir):
-                    for f in os.listdir(plugin_dir):
-                        if f.endswith(".plugin") and "ReMeow" in f and "Updater" not in f:
-                            remeow_path = os.path.join(plugin_dir, f)
-                            break
+                remeow_path = self._get_plugin_path_from_engine()
+            
             if not remeow_path:
                 mlog("Не удалось найти ReMeow.plugin")
-                run_on_ui_thread(lambda: BulletinHelper.show_error("ReMeow не найден для обновления"))
+                self._notify("ReMeow не найден для обновления", True)
                 self._self_destruct()
                 return
 
             mlog(f"Найден ReMeow: {remeow_path}")
-
-            update_url = "https://raw.githubusercontent.com/Yareks/plugins/main/ReMeow.plugin"
-            temp_path = remeow_path + ".new"
             
-            mlog(f"Скачивание обновления из {update_url}")
-            if not self._download_file(update_url, temp_path):
-                run_on_ui_thread(lambda: BulletinHelper.show_error("Не удалось скачать обновление ReMeow"))
+            # Проверяем права на запись
+            if not os.access(os.path.dirname(remeow_path), os.W_OK):
+                mlog("Нет прав на запись в директорию плагина")
+                self._notify("Нет прав для обновления ReMeow", True)
                 self._self_destruct()
                 return
 
-            with open(temp_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            match = re.search(r'__version__\s*=\s*"(.*?)"', content)
-            if not match:
-                mlog("Не удалось определить версию")
-                os.remove(temp_path)
+            # Скачиваем новую версию в память
+            update_url = "https://raw.githubusercontent.com/Yareks/plugins/main/ReMeow.plugin"
+            mlog(f"Скачивание обновления с {update_url}")
+            new_content = self._download_to_memory(update_url)
+            
+            if not new_content:
+                mlog("Не удалось скачать обновление")
+                self._notify("Не удалось скачать обновление ReMeow", True)
                 self._self_destruct()
                 return
-            new_version = match.group(1)
 
-            current_version = "0.0.0"
-            try:
-                with open(remeow_path, 'r', encoding='utf-8') as f:
-                    cur_content = f.read()
-                cur_match = re.search(r'__version__\s*=\s*"(.*?)"', cur_content)
-                if cur_match:
-                    current_version = cur_match.group(1)
-            except:
-                pass
+            # Проверяем версию новой версии
+            new_version_match = re.search(rb'__version__\s*=\s*"(.*?)"', new_content)
+            if not new_version_match:
+                mlog("Не удалось определить версию нового файла")
+                self._notify("Ошибка: не удалось определить версию", True)
+                self._self_destruct()
+                return
+            new_version = new_version_match.group(1).decode('utf-8')
+            mlog(f"Новая версия: {new_version}")
 
+            # Получаем текущую версию
+            current_version = self._get_version_from_file(remeow_path)
+            mlog(f"Текущая версия: {current_version}")
+
+            # Сравниваем версии
             if new_version == current_version:
-                mlog(f"Версии совпадают ({current_version})")
-                os.remove(temp_path)
+                mlog(f"Версии совпадают ({current_version}), обновление не требуется")
+                self._notify(f"ReMeow уже актуален (v{current_version})")
                 self._self_destruct()
                 return
 
             mlog(f"Обновление {current_version} -> {new_version}")
 
+            # Сохраняем новый файл во временное место, затем заменяем
+            temp_path = os.path.join(cache_dir, "ReMeow_temp.plugin")
+            with open(temp_path, 'wb') as f:
+                f.write(new_content)
+            
+            mlog(f"Временный файл сохранён: {temp_path}")
+            
+            # Создаём бэкап
             bak_path = remeow_path + ".bak"
             if os.path.exists(bak_path):
                 os.remove(bak_path)
+            
+            # Заменяем файл
             shutil.move(remeow_path, bak_path)
             shutil.move(temp_path, remeow_path)
+            mlog("Файл заменён")
+            
+            # Пытаемся перезагрузить плагин
+            mlog("Попытка горячей перезагрузки...")
+            if self._reload_plugin(remeow_path):
+                self._notify(f"ReMeow обновлён до {new_version}!")
+                update_success = True
+            else:
+                mlog("Горячая перезагрузка не удалась, требуется ручной перезапуск")
+                self._notify(f"ReMeow обновлён до {new_version}! Перезапустите приложение.")
+                update_success = True
+            
+            mlog("Обновление успешно завершено")
 
-            mlog("Обновление успешно")
-            run_on_ui_thread(lambda: BulletinHelper.show_success(f"ReMeow обновлён до {new_version}! Перезапустите приложение."))
-
-            time.sleep(2)
-
+        except PermissionError as e:
+            mlog(f"Ошибка доступа: {e}")
+            self._notify("Нет прав для обновления. Попробуйте переустановить ReMeow вручную.", True)
         except Exception as e:
             mlog(f"Ошибка: {e}")
-            run_on_ui_thread(lambda: BulletinHelper.show_error(f"Ошибка обновления ReMeow: {e}"))
+            import traceback
+            mlog(traceback.format_exc())
+            self._notify(f"Ошибка обновления ReMeow: {str(e)[:100]}", True)
         finally:
+            # Очистка временных файлов
+            try:
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    mlog("Временный файл удалён")
+            except:
+                pass
+            
+            # Немного ждём перед самоуничтожением
+            time.sleep(2)
+            
+            # Удаляем бэкап если обновление успешно
+            if update_success and remeow_path:
+                try:
+                    bak_path = remeow_path + ".bak"
+                    if os.path.exists(bak_path):
+                        os.remove(bak_path)
+                        mlog("Бэкап удалён")
+                except:
+                    pass
+            
+            # Самоуничтожение
             self._self_destruct()
 
     def _self_destruct(self):
+        """Удаляет себя из памяти и с диска"""
+        mlog("Самоуничтожение...")
+        
+        # Получаем путь к себе
+        plugin_path = None
         try:
-            path = sys.modules[self.__class__.__module__].__file__
-            if path and os.path.exists(path):
-                os.remove(path)
-        except:
-            pass
+            if hasattr(self, '__file__'):
+                plugin_path = self.__file__
+            elif self.__class__.__module__ in sys.modules:
+                mod = sys.modules[self.__class__.__module__]
+                if hasattr(mod, '__file__'):
+                    plugin_path = mod.__file__
+        except Exception as e:
+            mlog(f"Ошибка получения пути: {e}")
+        
+        # Выгружаем себя из системы
         try:
             PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
             PC.unloadPlugin(__id__)
-        except:
-            pass
+            mlog("Плагин выгружен из памяти")
+        except Exception as e:
+            mlog(f"Ошибка выгрузки: {e}")
+        
+        # Удаляем файл
+        if plugin_path and os.path.exists(plugin_path):
+            try:
+                os.remove(plugin_path)
+                mlog(f"Файл удалён: {plugin_path}")
+            except Exception as e:
+                mlog(f"Ошибка удаления файла: {e}")
+        else:
+            # Пробуем найти в кеше
+            try:
+                ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
+                cache_dir = ctx.getCacheDir().getAbsolutePath()
+                for f in os.listdir(cache_dir):
+                    if "ReMeow_Updater" in f and f.endswith(".tmp"):
+                        os.remove(os.path.join(cache_dir, f))
+                        mlog(f"Удалён временный файл: {f}")
+            except:
+                pass
+        
+        mlog("Установщик завершил работу")
