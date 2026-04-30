@@ -14,9 +14,9 @@ from org.telegram.messenger import AndroidUtilities, SharedConfig, MessagesContr
 from org.telegram.tgnet import ConnectionsManager
 
 try:
-    import ReMandre
+    import ReMeow
 except ImportError:
-    ReMandre = None
+    ReMeow = None
 
 __id__ = "MeowWG"
 __name__ = "MeowWG"
