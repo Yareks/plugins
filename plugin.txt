@@ -1,2 +1,3 @@
 MeowWG - Yareks/plugins/amnezia.plugin
 Banner - Yareks/plugins/banner.png, Yareks/plugins/banner2.png, Yareks/plugins/banner3.png, Yareks/plugins/banner4.png, Yareks/plugins/banner5.png
+Lib - Yareks/plugins/ReMeow.plugin
