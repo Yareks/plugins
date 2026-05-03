@@ -2031,7 +2031,7 @@ class ReMeowLib(BasePlugin):
         else:
             iv.setBackgroundColor(0xFF222222)
         container.addView(iv, LayoutHelper.createFrame(-1, 160))
-    return container
+        return container
 
     def create_settings(self):
         return [
