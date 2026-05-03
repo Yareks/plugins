@@ -1937,11 +1937,11 @@ class ReMeowLib(BasePlugin):
             self._apply_banner_with_fade(new_banner)
 
     def _apply_banner_with_fade(self, path):
-    """Плавно заменяет баннер на указанный."""
-    if not hasattr(self, 'last_banner_iv') or self.last_banner_iv is None:
-        # Если ImageView ещё не создан (настройки не открывались) – просто запоминаем путь
-        self.last_banner_path = path
-        return
+        """Плавно заменяет баннер на указанный."""
+        if not hasattr(self, 'last_banner_iv') or self.last_banner_iv is None:
+            # Если ImageView ещё не создан (настройки не открывались) – просто запоминаем путь
+            self.last_banner_path = path
+            return
 
     def _task():
         try:
