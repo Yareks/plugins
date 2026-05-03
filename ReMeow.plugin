@@ -1896,7 +1896,9 @@ class ReMeowLib(BasePlugin):
             b.setNegativeButton("Отмена", DialogClickProxy(lambda: None)).show()
 
         def open_finder(v):
-            if not UniversalFragment: return run_on_ui_thread(lambda: BulletinHelper.show_error("Магазин недоступен в этой версии"))
+            if not UniversalFragment: 
+                run_on_ui_thread(lambda: BulletinHelper.show_error("Магазин недоступен в этой версии"))
+                return
             get_last_fragment().presentFragment(UniversalFragment(RemoteModulesDelegate(self)))
 
         items = [
@@ -1906,7 +1908,8 @@ class ReMeowLib(BasePlugin):
             Header(text="Активные модули (Зажать для удаления)")
         ]
         
-        if not self.connected_modules: items.append(Text(text="Список пуст", icon="msg_info"))
+        if not self.connected_modules: 
+            items.append(Text(text="Список пуст", icon="msg_info"))
         else:
             for pid, meta in self.connected_modules.items():
                 items.append(Text(
@@ -1917,41 +1920,10 @@ class ReMeowLib(BasePlugin):
                 ))
         return items
 
-    def _open_module_details(self, pid):
-        meta = self.connected_modules.get(pid)
-        if not meta: return
-        def build():
-            items = [Header(text=f"Метаданные: {meta['name']}"), Text(text="Версия", subtext=meta["version"], icon="msg_info")]
-            status_text = meta.get("status", "Неизвестно")
-            items.append(Text(text="Статус", subtext=status_text))
-            
-            if meta.get("info"): items.append(Text(text="Информация", subtext=meta["info"]))
-            
-            if meta.get("params"):
-                items.append(Header(text="Параметры / Настройка"))
-                for k, v in meta["params"].items():
-                    if isinstance(v, dict):
-                        t = v.get("type")
-                        if t == "switch":
-                            items.append(Switch(text=k, default=v.get("value", False), on_change=v.get("on_change")))
-                        elif t == "input":
-                            items.append(Input(text=k, default=str(v.get("value", "")), on_change=v.get("on_change")))
-                        else:
-                            items.append(Text(text=k, subtext=str(v.get("value", v))))
-                    else:
-                        items.append(Text(text=k, subtext=str(v)))
-                
-            if meta.get("actions"):
-                items.append(Header(text="Действия / Функции"))
-                for n, f in meta["actions"].items(): 
-                    items.append(Text(text=n, icon="msg_stats", on_click=lambda v, func=f: func()))
-            return items
-        from ui.settings import SettingsFragment
-        get_last_fragment().presentFragment(SettingsFragment(meta["name"], build()))
-
     def _show_delete_alert(self, pid):
         ctx = jclass("org.telegram.ui.LaunchActivity").instance
-        if not ctx: return True
+        if not ctx: 
+            return False  # важно: long click должен вернуть False, если не обработан
         b = AlertDialog.Builder(ctx)
         b.setTitle("Удаление").setMessage("Удалить этот плагин из системы?")
         b.setPositiveButton("Да", DialogClickProxy(lambda: self._do_delete(pid)))
@@ -1966,7 +1938,7 @@ class ReMeowLib(BasePlugin):
                 self.connected_modules.pop(pid, None)
                 run_on_ui_thread(lambda: BulletinHelper.show_success("Модуль удален."))
                 frag = get_last_fragment()
-                if frag and str(frag.getClass().getSimpleName()) == "SettingsFragment":
+                if frag and "SettingsFragment" in str(frag.getClass().getSimpleName()):
                     frag.finishFragment()
             else:
                 run_on_ui_thread(lambda: BulletinHelper.show_error("Плагин не найден."))
