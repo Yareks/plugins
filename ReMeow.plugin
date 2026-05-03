@@ -1,4 +1,4 @@
-import os, sys, time, json, ctypes, requests, re, threading, shutil, zipfile, importlib, random, hashlib
+import os, sys, time, json, ctypes, requests, re, threading, shutil, zipfile, importlib, random, socket
 import traceback
 from typing import Dict, Optional, Any, List
 from java import jclass, dynamic_proxy, jfloat, jarray, jint
@@ -22,14 +22,15 @@ from org.telegram.messenger import AndroidUtilities
 
 __id__ = "ReMeow"
 __name__ = "ReMeow Lib" 
-__version__ = "1.1"
-__icon__ = "Plugin2/1"
+__version__ = "1.8.9"
 __author__ = "@playerqwe"
-__description__ = "Библиотека ReMeow (основа от @swagnonher Mandre Lib)"
+__description__ = "Библиотека ReMeow (Core)"
+__icon__ = "Plugin2/1"
 __min_version__ = "11.0.0"
 
 _CFFI_READY = threading.Event()
 _CFFI_REINSTALL_LOCK = threading.Lock()
+_UPDATE_SHOWN_THIS_SESSION = False
 
 def mlog(msg):
     log(f"[ReMeow] {msg}")
@@ -41,6 +42,12 @@ def is_safe_mode() -> bool:
     except:
         return False
 
+def safe_jclass(path):
+    try:
+        return jclass(path)
+    except:
+        return None
+
 class SafeDownloader:
     @staticmethod
     def download(url: str, dest_path: str, progress_cb=None) -> bool:
@@ -48,11 +55,14 @@ class SafeDownloader:
         try:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
+            
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
             with requests.get(url, stream=True, timeout=30) as r:
                 r.raise_for_status()
                 total_size = int(r.headers.get('content-length', 0))
                 downloaded = 0
+                
                 with open(tmp_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
@@ -60,12 +70,14 @@ class SafeDownloader:
                             downloaded += len(chunk)
                             if progress_cb and total_size > 0:
                                 progress_cb(downloaded, total_size)
+                
                 if downloaded < 10:
-                    raise ValueError("File too small")
-            if os.path.exists(dest_path):
-                os.remove(dest_path)
+                     raise ValueError("File is too small or empty")
+
+            if os.path.exists(dest_path): os.remove(dest_path)
             os.rename(tmp_path, dest_path)
             return True
+
         except Exception as e:
             mlog(f"SafeDownloader Error: {e} | URL: {url}")
             if os.path.exists(tmp_path):
@@ -73,40 +85,13 @@ class SafeDownloader:
                 except: pass
             return False
 
-    @staticmethod
-    def get_remote_version(url: str) -> Optional[str]:
-        try:
-            r = requests.get(url, stream=True, timeout=10)
-            if r.status_code == 200:
-                chunk = r.iter_content(chunk_size=4096).__next__()
-                match = re.search(rb'__version__\s*=\s*"(.*?)"', chunk)
-                if match:
-                    return match.group(1).decode()
-            return None
-        except:
-            return None
-
-    @staticmethod
-    def get_remote_etag_or_length(url: str) -> Optional[str]:
-        try:
-            r = requests.head(url, timeout=10)
-            if r.status_code == 200:
-                etag = r.headers.get('ETag')
-                if etag:
-                    return etag
-                length = r.headers.get('Content-Length')
-                if length:
-                    return f"size:{length}"
-            return None
-        except:
-            return None
-
 class RePip:
     WHEELS_CORE = {
         "setuptools": "https://files.pythonhosted.org/packages/a3/dc/17031897dae0efacfea57dfd3a82fdd2a2aeb58e0ff71b77b87e44edc772/setuptools-80.9.0-py3-none-any.whl",
         "pip": "https://files.pythonhosted.org/packages/44/3c/d717024885424591d5376220b5e836c2d5293ce2011523c9de23ff7bf068/pip-25.3-py3-none-any.whl",
         "wheel": "https://files.pythonhosted.org/packages/0b/2c/87f3254fd8ffd29e4c02732eee68a83a1d3c346ae39bc6822dcbcb697f2b/wheel-0.45.1-py3-none-any.whl",
     }
+    
     PYCPARSER_URL = "https://github.com/coidarashka/MandreLib-Modules/releases/download/PIP/pycparser-3.0-py3-none-any.whl"
     CFFI_URL = "https://github.com/coidarashka/MandreLib-Modules/releases/download/PIP/cffi-2.0.0-cp311-cp311-android_30_arm64_v8a.whl"
 
@@ -131,12 +116,14 @@ class RePip:
                 return True
             except ImportError:
                 mlog("RePip: Bootstrapping pip...")
+
             for name, url in RePip.WHEELS_CORE.items():
                 fname = os.path.join(wheel_cache, url.split("/")[-1])
                 if not os.path.exists(fname) or os.path.getsize(fname) < 1024:
                     mlog(f"RePip: Downloading core {name}...")
                     if not SafeDownloader.download(url, fname):
                         return False
+
                 with zipfile.ZipFile(fname) as zf:
                     zf.extractall(site_pkgs)
             importlib.invalidate_caches()
@@ -186,8 +173,10 @@ class RePip:
         if is_safe_mode(): return False
         RePip._expose_python_symbols()
         if '_cffi_backend' in sys.modules: return True
+        
         _, site_pkgs, _ = RePip.get_dirs()
         if not os.path.exists(site_pkgs): return False
+        
         try:
             so_path = None
             for root, dirs, files in os.walk(site_pkgs):
@@ -196,6 +185,7 @@ class RePip:
                         so_path = os.path.join(root, f)
                         break
                 if so_path: break
+                
             if so_path:
                 linker = NativeLinker()
                 lib = linker.load(so_path, is_python_ext=True)
@@ -212,18 +202,22 @@ class RePip:
     @staticmethod
     def install_wheel_direct(url, package_name):
         if is_safe_mode() or not RePip.bootstrap(): return False
+        
         _, site_pkgs, wheel_cache = RePip.get_dirs()
         fname = os.path.join(wheel_cache, url.split("/")[-1])
+
         if not os.path.exists(fname) or os.path.getsize(fname) < 1024:
             mlog(f"RePip: Downloading {package_name} from URL...")
             if not SafeDownloader.download(url, fname):
                 mlog(f"RePip: Failed to download {package_name}")
                 return False
+
         mlog(f"RePip: Installing {package_name}...")
         try:
             import contextlib
             from io import StringIO
             output = StringIO()
+            
             py_ver = f"{sys.version_info.major}{sys.version_info.minor}"
             args = [
                 "install", fname, "--target", site_pkgs, 
@@ -234,12 +228,14 @@ class RePip:
                 "--abi", f"cp{py_ver}",
                 "--only-binary", ":all:"
             ]
+            
             with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                 import pip
                 if hasattr(pip, "main"): pip.main(args)
                 else: 
                     from pip._internal.cli.main import main as pip_main
                     pip_main(args)
+            
             out_str = output.getvalue()
             if "Successfully installed" in out_str or "Requirement already satisfied" in out_str:
                 mlog(f"RePip: {package_name} installed successfully.")
@@ -249,6 +245,7 @@ class RePip:
                 try: os.remove(fname)
                 except: pass
                 return False
+                
         except Exception as e:
             mlog(f"RePip Install Error (Exception): {e}")
             return False
@@ -271,7 +268,9 @@ class NativeLinker:
         if not os.path.exists(path) or os.path.getsize(path) < 1024: 
             mlog(f"NativeLinker: Path invalid or file too small: {path}")
             return None
+
         LoaderClass = ctypes.PyDLL if is_python_ext else ctypes.CDLL
+
         if Build.VERSION.SDK_INT >= 29 and self.open_ext:
             fd = os.open(path, os.O_RDONLY)
             try:
@@ -292,14 +291,19 @@ class ModuleGatekeeper:
     def _check_access(self, key):
         if key not in self.loader._storage:
             return False, "Not loaded"
+
         try:
             frame = sys._getframe(2) 
             caller_id = frame.f_globals.get("__id__")
+
             if not caller_id or caller_id == "ReMeow":
                 return True, None
+
             plugin_choices = self.loader.choices.get(caller_id, {})
+
             if plugin_choices.get(key) is False:
                 return False, "User disabled this module"
+                
             return True, None
         except:
             return True, None
@@ -313,11 +317,13 @@ class ModuleGatekeeper:
     def __contains__(self, key):
         allowed, _ = self._check_access(key)
         return allowed
+
     def get(self, key, default=None):
         try:
             return self[key]
         except KeyError:
             return default
+
     def keys(self): return self.loader._storage.keys()
 
 class ReLoad:
@@ -328,8 +334,10 @@ class ReLoad:
             self.root = os.path.join(str(ctx.getFilesDir()), "remeow_modules")
         except: self.root = "/data/data/org.telegram.messenger/files/remeow_modules"
         if not os.path.exists(self.root): os.makedirs(self.root)
+        
         self._storage = {}
         self.loaded_modules = ModuleGatekeeper(self)
+        
         p = os.path.join(self.root, "user_choices.json")
         if os.path.exists(p):
             try:
@@ -359,15 +367,18 @@ class CryingSheet:
             BottomSheet = jclass("org.telegram.ui.ActionBar.BottomSheet")
             self.sheet = BottomSheet(context, False)
             self.sheet.fixNavigationBar()
+            
             AU = jclass("org.telegram.messenger.AndroidUtilities")
             LH = jclass("org.telegram.ui.Components.LayoutHelper")
             TV = jclass("android.widget.TextView")
             LL = jclass("android.widget.LinearLayout")
             SIV = jclass("org.telegram.ui.Components.StickerImageView")
             Theme = jclass("org.telegram.ui.ActionBar.Theme")
+            
             self.root = LL(context)
             self.root.setOrientation(1)
             self.root.setPadding(0, AU.dp(18), 0, AU.dp(18))
+            
             try:
                 self.sticker = SIV(context, 0)
                 self.sticker.setStickerPackName("UtyaDuck")
@@ -375,6 +386,7 @@ class CryingSheet:
                 self.sticker.getImageReceiver().setAutoRepeat(1)
                 self.root.addView(self.sticker, LH.createLinear(144, 144, 1, 0, 10, 0, 0))
             except: pass
+            
             self.title = TV(context)
             self.title.setText("Всё пошло не так 😭")
             self.title.setTextSize(1, 20.0)
@@ -382,15 +394,164 @@ class CryingSheet:
             self.title.setGravity(1)
             self.title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
             self.root.addView(self.title, LH.createLinear(-1, -2, 1, 40, 15, 40, 0))
+            
             self.description = TV(context)
             self.description.setText(f"ReMeow не смог инициализировать CFFI после всех попыток.\nПлагин '{self.plugin_id}' может работать нестабильно.")
             self.description.setTextSize(1, 14.0)
             self.description.setGravity(1)
             self.description.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
             self.root.addView(self.description, LH.createLinear(-1, -2, 1, 35, 10, 35, 10))
+            
             self.sheet.setCustomView(self.root)
         except Exception as e:
             mlog(f"Failed to create CryingSheet: {e}")
+
+    def show(self):
+        if self.sheet: self.sheet.show()
+
+class UpdateNotificationSheet:
+    def __init__(self, context, available_updates, on_update_all):
+        self.context = context
+        self.updates = sorted(available_updates, key=lambda x: 0 if x['id'] == 'remeow' else 1) 
+        self.on_update_all = on_update_all
+        self.sheet = None
+        
+        try:
+            BottomSheet = jclass("org.telegram.ui.ActionBar.BottomSheet")
+            self.sheet = BottomSheet(context, False)
+            self.sheet.fixNavigationBar()
+            
+            AU = jclass("org.telegram.messenger.AndroidUtilities")
+            LH = jclass("org.telegram.ui.Components.LayoutHelper")
+            TV = jclass("android.widget.TextView")
+            LL = jclass("android.widget.LinearLayout")
+            IV = jclass("android.widget.ImageView")
+            Theme = jclass("org.telegram.ui.ActionBar.Theme")
+            SIV = jclass("org.telegram.ui.Components.StickerImageView")
+            SV = jclass("android.widget.ScrollView")
+            R_tg = jclass("org.telegram.messenger.R")
+            
+            self.root = LL(context)
+            self.root.setOrientation(1)
+            self.root.setPadding(0, AU.dp(20), 0, AU.dp(20))
+            
+            # 1. Заголовок (Самый верх)
+            self.title = TV(context)
+            self.title.setText("Найдено обновление:")
+            self.title.setTextSize(1, 20.0)
+            self.title.setTypeface(AU.bold())
+            self.title.setGravity(1)
+            self.title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+            self.root.addView(self.title, LH.createLinear(-1, -2, 1, 40, 0, 40, 15))
+
+            # 2. Список обновлений (Сверху вниз, под заголовком)
+            scroll = SV(context)
+            scroll.setFillViewport(True)
+            
+            list_cont = LL(context)
+            list_cont.setOrientation(1)
+            list_cont.setPadding(AU.dp(24), 0, AU.dp(24), 0)
+            
+            PI = safe_jclass("com.exteragram.messenger.plugins.ui.PluginIcons")
+            
+            for upd in self.updates:
+                row = LL(context)
+                row.setOrientation(0)
+                row.setGravity(16)
+                row.setPadding(0, AU.dp(8), 0, AU.dp(8))
+                
+                icon_iv = IV(context)
+                icon_applied = False
+                if PI:
+                    try:
+                        drawable = PI.getDrawable(upd['icon_str'], AU.dp(32), Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon))
+                        if drawable:
+                            icon_iv.setImageDrawable(drawable)
+                            icon_applied = True
+                    except: pass
+                
+                if not icon_applied:
+                    icon_iv.setImageResource(R_tg.drawable.msg_bot)
+                    icon_iv.setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon), jclass("android.graphics.PorterDuff$Mode").SRC_IN))
+                
+                row.addView(icon_iv, LH.createLinear(32, 32, 0, 0, 0, 12, 0))
+                
+                text_l = LL(context)
+                text_l.setOrientation(1)
+                
+                name_t = TV(context)
+                name_t.setText(upd['name'])
+                name_t.setTextSize(1, 16.0)
+                name_t.setTypeface(AU.bold())
+                name_t.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+                text_l.addView(name_t)
+                
+                ver_t = TV(context)
+                ver_t.setText(f"{upd['old']} > {upd['new']}")
+                ver_t.setTextSize(1, 13.0)
+                ver_t.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader))
+                text_l.addView(ver_t)
+                
+                row.addView(text_l, LH.createLinear(0, -2, 1.0))
+                list_cont.addView(row)
+            
+            scroll.addView(list_cont)
+            # Добавляем с весом 1.0, чтобы он занимал всё доступное место
+            self.root.addView(scroll, LH.createLinear(-1, 0, 1.0, 0, 5, 0, 15))
+
+            # 3. Стикер (Теперь под списком)
+            try:
+                self.sticker = SIV(context, 0)
+                self.sticker.setStickerPackName("UtyaDuck")
+                self.sticker.setStickerNum(1) 
+                self.sticker.getImageReceiver().setAutoRepeat(1)
+                self.root.addView(self.sticker, LH.createLinear(110, 110, 1, 0, 0, 0, 15))
+            except: pass
+            
+            # 4. Кнопки (В самом низу)
+            btns = LL(context)
+            btns.setOrientation(0)
+            btns.setPadding(AU.dp(20), 0, AU.dp(20), 0)
+            
+            skip = TV(context)
+            skip.setText("позже 😭")
+            skip.setGravity(17)
+            skip.setTextSize(1, 14.0)
+            skip.setTypeface(AU.bold())
+            skip.setTextColor(Theme.getColor(Theme.key_text_RedBold))
+            skip.setBackground(Theme.getSelectorDrawable(False))
+            skip.setPadding(AU.dp(12), AU.dp(10), AU.dp(12), AU.dp(10))
+            skip.setOnClickListener(OnClickProxy(lambda v: self._handle_skip()))
+            btns.addView(skip, LH.createLinear(0, -2, 1.0, 0, 0, 8, 0))
+            
+            upd_btn = TV(context)
+            upd_btn.setText("обновить ❤️")
+            upd_btn.setGravity(17)
+            upd_btn.setTextSize(1, 14.0)
+            upd_btn.setTypeface(AU.bold())
+            upd_btn.setTextColor(Theme.getColor(Theme.key_featuredStickers_buttonText))
+            upd_btn.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AU.dp(8), Theme.getColor(Theme.key_featuredStickers_addButton), 0))
+            upd_btn.setPadding(AU.dp(12), AU.dp(10), AU.dp(12), AU.dp(10))
+            upd_btn.setOnClickListener(OnClickProxy(lambda v: self._handle_update()))
+            btns.addView(upd_btn, LH.createLinear(0, -2, 1.2))
+            
+            self.root.addView(btns, LH.createLinear(-1, -2))
+            
+            self.sheet.setCustomView(self.root)
+            self.sheet.setCanDismissWithSwipe(False)
+            self.sheet.setCancelable(False)
+            self.sheet.setCanceledOnTouchOutside(False)
+        except Exception as e:
+            mlog(f"Failed to create UpdateSheet: {e}")
+
+    def _handle_skip(self):
+        global _UPDATE_SHOWN_THIS_SESSION
+        _UPDATE_SHOWN_THIS_SESSION = True
+        if self.sheet: self.sheet.dismiss()
+
+    def _handle_update(self):
+        if self.sheet: self.sheet.dismiss()
+        self.on_update_all()
 
     def show(self):
         if self.sheet: self.sheet.show()
@@ -401,10 +562,17 @@ class ReMeowCore:
         if is_safe_mode():
             mlog("SAFE MODE ACTIVE: ReMeowCore Initialization Blocked.")
             return
+
         pid = getattr(plugin_instance, "__id__", "unknown")
+        
         if not _CFFI_READY.is_set():
             mlog(f"[{pid}] CFFI not ready. Launching progressive async wait...")
-            threading.Thread(target=ReMeowCore._progressive_wait, args=(plugin_instance, pid), daemon=True, name=f"ReMeowWait_{pid}").start()
+            threading.Thread(
+                target=ReMeowCore._progressive_wait, 
+                args=(plugin_instance, pid),
+                daemon=True,
+                name=f"ReMeowWait_{pid}"
+            ).start()
         else:
             ReMeowCore._finish_initialization(plugin_instance)
 
@@ -412,17 +580,20 @@ class ReMeowCore:
     def _progressive_wait(plugin_instance, pid):
         timeouts = [7, 12, 17, 22]
         cffi_ok = False
+        
         for t in timeouts:
             if _CFFI_READY.wait(timeout=t):
                 mlog(f"[{pid}] CFFI is ready after waiting {t}s.")
                 cffi_ok = True
                 break
             mlog(f"[{pid}] Progressive timeout {t}s passed, CFFI still not ready...")
+            
         if not cffi_ok:
             with _CFFI_REINSTALL_LOCK:
                 if not _CFFI_READY.is_set():
                     mlog(f"[{pid}] Progressive timeouts exhausted. Forcing CFFI reinstall...")
                     run_on_ui_thread(lambda: BulletinHelper.show_info(f"ReMeow: Восстановление ядра для {pid}..."))
+                    
                     RePip.install_wheel_direct(RePip.CFFI_URL, "cffi")
                     RePip.fix_cffi_backend()
                     try:
@@ -433,12 +604,14 @@ class ReMeowCore:
                         mlog(f"[{pid}] CFFI forced reinstall successful!")
                     except Exception as e:
                         mlog(f"[{pid}] CFFI reinstall failed: {e}")
+
             post_timeouts = [8, 13]
             for t in post_timeouts:
                 if _CFFI_READY.wait(timeout=t):
                     cffi_ok = True
                     break
                 mlog(f"[{pid}] Post-reinstall timeout {t}s passed...")
+                
         if not cffi_ok:
             mlog(f"[{pid}] FATAL: CFFI initialization completely failed. Crying sheet incoming.")
             def show_crying():
@@ -453,7 +626,9 @@ class ReMeowCore:
                     mlog(f"CryingSheet show error: {e}")
             run_on_ui_thread(show_crying)
             return
+
         ReMeowCore._finish_initialization(plugin_instance)
+        
         if hasattr(plugin_instance, "on_remeow_ready") and callable(plugin_instance.on_remeow_ready):
             try:
                 plugin_instance.on_remeow_ready()
@@ -466,7 +641,9 @@ class ReMeowCore:
         if site_pkgs not in sys.path:
             sys.path.insert(0, site_pkgs)
             importlib.invalidate_caches()
+            
         RePip.fix_cffi_backend()
+
         reqs = getattr(plugin_instance, "__ReqRements__", {})
         if not reqs:
             try:
@@ -474,17 +651,22 @@ class ReMeowCore:
                 reqs = getattr(mod, "__ReqRements__", {})
             except: pass
         if not reqs: return
+        
         loader = ReLoad.get()
         pid = getattr(plugin_instance, "__id__", None)
         if not pid:
             try: pid = sys.modules[plugin_instance.__module__].__id__
             except: pid = "unknown"
+
         missing_modules = {}
+
         for name, data in reqs.items():
             p = data.split(" - ")
             url = p[0].strip()
             opt = "optional" in data.lower()
+            
             path = os.path.join(loader.root, f"{name}.so")
+            
             if not os.path.exists(path) or os.path.getsize(path) < 1024:
                 if opt and not loader.choices.get(pid, {}).get(name, True):
                     continue
@@ -492,16 +674,20 @@ class ReMeowCore:
                     missing_modules[name] = url
                 elif not opt:
                     mlog(f"ReMeow: Missing required module {name} and no download URL provided.")
+
         if missing_modules:
             mlog(f"Missing modules detected for {pid}: {list(missing_modules.keys())}. Triggering UI download...")
             download_event = threading.Event()
             success_flag = [False]
+            
             def on_finish():
                 success_flag[0] = True
                 download_event.set()
+                
             def on_error():
                 success_flag[0] = False
                 download_event.set()
+                
             def show_ui():
                 try:
                     act = jclass("org.telegram.ui.LaunchActivity").instance
@@ -517,16 +703,21 @@ class ReMeowCore:
                 except Exception as e:
                     mlog(f"Error showing sheet: {e}")
                     on_error()
+                    
             run_on_ui_thread(show_ui)
             download_event.wait()
+            
             if not success_flag[0]:
                 mlog(f"ReMeow: Failed to download dependencies for {pid}. Please reinstall.")
                 return
+
         for name, data in reqs.items():
             opt = "optional" in data.lower()
             path = os.path.join(loader.root, f"{name}.so")
+            
             if opt and not loader.choices.get(pid, {}).get(name, True):
                 continue
+                
             lib = NativeLinker().load(path)
             if lib:
                 loader._storage[name] = lib
@@ -541,10 +732,12 @@ class DependencyProgressSheet:
         self.on_error = on_error
         self.sheet = None
         self.has_error = False
+        
         try:
             BottomSheet = jclass("org.telegram.ui.ActionBar.BottomSheet")
             self.sheet = BottomSheet(context, False)
             self.sheet.fixNavigationBar()
+            
             AU = jclass("org.telegram.messenger.AndroidUtilities")
             LH = jclass("org.telegram.ui.Components.LayoutHelper")
             TV = jclass("android.widget.TextView")
@@ -552,9 +745,11 @@ class DependencyProgressSheet:
             SIV = jclass("org.telegram.ui.Components.StickerImageView")
             Theme = jclass("org.telegram.ui.ActionBar.Theme")
             LPV = jclass("org.telegram.ui.Components.LineProgressView")
+            
             self.root = LL(context)
             self.root.setOrientation(1)
             self.root.setPadding(0, AU.dp(18), 0, AU.dp(18))
+            
             try:
                 self.sticker = SIV(context, 0)
                 self.sticker.setStickerPackName("UtyaDuck")
@@ -562,6 +757,7 @@ class DependencyProgressSheet:
                 self.sticker.getImageReceiver().setAutoRepeat(1)
                 self.root.addView(self.sticker, LH.createLinear(144, 144, 1, 0, 10, 0, 0))
             except: pass
+            
             self.title = TV(context)
             self.title.setText("Установка компонентов")
             self.title.setTextSize(1, 20.0)
@@ -569,19 +765,23 @@ class DependencyProgressSheet:
             self.title.setGravity(1)
             self.title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
             self.root.addView(self.title, LH.createLinear(-1, -2, 1, 40, 15, 40, 0))
+            
             self.progress_view = LPV(context)
             self.progress_view.setProgressColor(Theme.getColor(Theme.key_featuredStickers_addButton))
             self.progress_view.setBackColor(Theme.getColor(Theme.key_windowBackgroundGray))
             self.root.addView(self.progress_view, LH.createLinear(-1, 5, 1, 45, 25, 45, 0))
+            
             self.description = TV(context)
             self.description.setText("Инициализация...")
             self.description.setTextSize(1, 13.0)
             self.description.setGravity(1)
             self.description.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
             self.root.addView(self.description, LH.createLinear(-1, -2, 1, 35, 10, 35, 10))
+            
             self.sheet.setCustomView(self.root)
             self.sheet.setCanDismissWithSwipe(False)
             self.sheet.setCancelable(False)
+            self.sheet.setCanceledOnTouchOutside(False)
         except Exception as e:
             mlog(f"Failed to create DependencyProgressSheet: {e}")
 
@@ -596,23 +796,30 @@ class DependencyProgressSheet:
     def _worker(self):
         loader = ReLoad.get()
         total_modules = len(self.modules)
+        
         for idx, (name, url) in enumerate(self.modules.items()):
             if self.sheet and self.has_error: break
+            
             if self.sheet:
                 run_on_ui_thread(lambda n=name: self.description.setText(f"Скачивание {n}..."))
+            
             path = os.path.join(loader.root, f"{name}.so")
+            
             try:
                 def prog_cb(down, total):
                     if self.sheet and total > 0:
                         module_progress = down / total
                         overall_progress = (idx + module_progress) / total_modules
                         run_on_ui_thread(lambda p=overall_progress: self.progress_view.setProgress(p, True))
+                
                 success = SafeDownloader.download(url, path, progress_cb=prog_cb)
                 if not success:
                     raise Exception(f"SafeDownloader returned False for {name}")
+
                 if self.sheet:
                     run_on_ui_thread(lambda n=name: self.description.setText(f"Успешно: {n}"))
                 time.sleep(0.2)
+                
             except Exception as e:
                 mlog(f"Download Error in Sheet: {e}")
                 self.has_error = True
@@ -624,6 +831,7 @@ class DependencyProgressSheet:
                     ))
                 time.sleep(2)
                 break
+                
         time.sleep(0.5)
         run_on_ui_thread(self._finish)
 
@@ -643,10 +851,12 @@ class CoreInstallerSheet:
         self.on_finish = on_finish
         self.sheet = None
         self.has_error = False
+        
         try:
             BottomSheet = jclass("org.telegram.ui.ActionBar.BottomSheet")
             self.sheet = BottomSheet(context, False)
             self.sheet.fixNavigationBar()
+            
             AU = jclass("org.telegram.messenger.AndroidUtilities")
             LH = jclass("org.telegram.ui.Components.LayoutHelper")
             TV = jclass("android.widget.TextView")
@@ -654,9 +864,11 @@ class CoreInstallerSheet:
             SIV = jclass("org.telegram.ui.Components.StickerImageView")
             Theme = jclass("org.telegram.ui.ActionBar.Theme")
             LPV = jclass("org.telegram.ui.Components.LineProgressView")
+            
             self.root = LL(context)
             self.root.setOrientation(1)
             self.root.setPadding(0, AU.dp(18), 0, AU.dp(18))
+            
             try:
                 self.sticker = SIV(context, 0)
                 self.sticker.setStickerPackName("UtyaDuck")
@@ -664,6 +876,7 @@ class CoreInstallerSheet:
                 self.sticker.getImageReceiver().setAutoRepeat(1)
                 self.root.addView(self.sticker, LH.createLinear(144, 144, 1, 0, 10, 0, 0))
             except: pass
+            
             self.title = TV(context)
             self.title.setText("Настройка Python")
             self.title.setTextSize(1, 20.0)
@@ -671,19 +884,23 @@ class CoreInstallerSheet:
             self.title.setGravity(1)
             self.title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
             self.root.addView(self.title, LH.createLinear(-1, -2, 1, 40, 15, 40, 0))
+            
             self.progress_view = LPV(context)
             self.progress_view.setProgressColor(Theme.getColor(Theme.key_featuredStickers_addButton))
             self.progress_view.setBackColor(Theme.getColor(Theme.key_windowBackgroundGray))
             self.root.addView(self.progress_view, LH.createLinear(-1, 5, 1, 45, 25, 45, 0))
+            
             self.description = TV(context)
             self.description.setText("Проверка зависимостей...")
             self.description.setTextSize(1, 13.0)
             self.description.setGravity(1)
             self.description.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
             self.root.addView(self.description, LH.createLinear(-1, -2, 1, 35, 10, 35, 10))
+            
             self.sheet.setCustomView(self.root)
             self.sheet.setCanDismissWithSwipe(False)
             self.sheet.setCancelable(False)
+            self.sheet.setCanceledOnTouchOutside(False)
         except Exception as e:
             mlog(f"Failed to create CoreInstallerSheet: {e}")
 
@@ -709,6 +926,7 @@ class CoreInstallerSheet:
         _, site_pkgs, wheel_cache = RePip.get_dirs()
         if site_pkgs not in sys.path: sys.path.insert(0, site_pkgs)
         importlib.invalidate_caches()
+        
         self._update_status(0.1, "Распаковка ядра PIP...")
         try:
             if not RePip.bootstrap():
@@ -720,18 +938,23 @@ class CoreInstallerSheet:
         except Exception as e:
             mlog(f"Bootstrap failed: {e}")
             self.has_error = True
+
         self._update_status(0.4, "Установка pycparser...")
         try:
             RePip.ensure_pycparser()
         except Exception as e:
             mlog(f"pycparser failed: {e}")
+
         self._update_status(0.7, "Установка CFFI...")
+        
         try:
             try:
                 for f in os.listdir(wheel_cache):
                     if "cffi" in f: os.remove(os.path.join(wheel_cache, f))
             except: pass
+            
             success = RePip.install_wheel_direct(RePip.CFFI_URL, "cffi")
+            
             if success:
                 self._update_status(0.9, "Инициализация CFFI...")
                 importlib.invalidate_caches()
@@ -747,12 +970,15 @@ class CoreInstallerSheet:
             else:
                 mlog("CFFI installation returned False")
                 self.has_error = True
+                
         except Exception as e:
             mlog(f"CFFI install fatal error: {e}")
             self.has_error = True
+        
         finally:
             if site_pkgs in sys.path: sys.path.remove(site_pkgs)
             _CFFI_READY.set()
+
         if self.has_error:
             self._update_status(1.0, "Сбой при настройке!", True)
             BulletinHelper.show_error("Ошибка настройки ядра. Попробуйте еще раз.")
@@ -760,6 +986,7 @@ class CoreInstallerSheet:
         else:
             self._update_status(1.0, "Готово!")
             time.sleep(1)
+            
         run_on_ui_thread(self._finish)
 
     def _finish(self):
@@ -769,21 +996,25 @@ class CoreInstallerSheet:
         if not self.has_error and self.on_finish: 
             self.on_finish()
 
-# ----- Анимации и хуки -----
 class ExpandAnimListener(dynamic_proxy(jclass("android.animation.Animator$AnimatorListener"))):
     def __init__(self, wrapper):
         super().__init__()
         self.wrapper = wrapper
         self.canceled = False
+        
     def onAnimationStart(self, *args):
         self.canceled = False
         self.wrapper.setVisibility(0)
+        
     def onAnimationEnd(self, *args):
         if not self.canceled and self.wrapper.getLayoutParams().height == 0:
             self.wrapper.setVisibility(8)
+            
     def onAnimationCancel(self, *args):
         self.canceled = True
-    def onAnimationRepeat(self, *args): pass
+        
+    def onAnimationRepeat(self, *args): 
+        pass
 
 class ExpandAnimUpdate(dynamic_proxy(jclass("android.animation.ValueAnimator$AnimatorUpdateListener"))):
     def __init__(self, wrapper, content, arrow, target_h, state_dict):
@@ -793,27 +1024,38 @@ class ExpandAnimUpdate(dynamic_proxy(jclass("android.animation.ValueAnimator$Ani
         self.arrow = arrow
         self.target_h = target_h
         self.state = state_dict
+        
     def onAnimationUpdate(self, a):
         p = float(a.getAnimatedValue())
         self.state["progress"] = p
+        
         lp = self.wrapper.getLayoutParams()
         lp.height = int(self.target_h * p)
         self.wrapper.setLayoutParams(lp)
+        
         alpha = max(0.0, min(1.0, (p - 0.2) / 0.8))
         self.content.setAlpha(alpha)
+
         scale = 0.92 + 0.08 * p
         self.content.setScaleX(scale)
         self.content.setScaleY(scale)
+
         offset = self.target_h * 0.15
         self.content.setTranslationY(-offset * (1.0 - p))
+
         self.arrow.setRotation(180.0 * p)
 
 class OnClickProxy(dynamic_proxy(jclass("android.view.View$OnClickListener"))):
     def __init__(self, cb): super().__init__(); self.cb = cb
     def onClick(self, v): self.cb(v)
 
+class OnLongClickProxy(dynamic_proxy(jclass("android.view.View$OnLongClickListener"))):
+    def __init__(self, cb): super().__init__(); self.cb = cb
+    def onLongClick(self, v): return self.cb(v)
+
 class InstallSheetHook(MethodHook):
     def __init__(self, plugin): self.plugin = plugin
+    
     def after_hooked_method(self, param):
         def modify_ui():
             try:
@@ -827,6 +1069,7 @@ class InstallSheetHook(MethodHook):
                 jarray = __import__("java").jarray
                 jfloat = __import__("java").jfloat
                 FrameLayout = jclass("android.widget.FrameLayout")
+
                 sheet = param.thisObject
                 plugin_id = param.args[1].plugin.getId()
                 file_path = param.args[2].filePath
@@ -837,65 +1080,83 @@ class InstallSheetHook(MethodHook):
                     if match: reqs = eval(match.group(1))
                 except: pass
                 if not reqs: return
+                
                 curr = sheet.getClass()
                 field = None
                 while curr:
                     try: field = curr.getDeclaredField("customView"); break
                     except: curr = curr.getSuperclass()
+                
                 if field:
                     field.setAccessible(True)
                     sv = field.get(sheet)
                     main_layout = sv.getChildAt(0).getChildAt(0)
                     ctx = main_layout.getContext()
+                    
                     idx = 1
                     source_badge = None
                     for i in range(main_layout.getChildCount()):
                         v = main_layout.getChildAt(i)
                         if isinstance(v, LL) and v.getOrientation() == 0 and v.getChildCount() > 0:
                             source_badge, idx = v, i; break
+                    
                     row_cont = LL(ctx); row_cont.setOrientation(0); row_cont.setGravity(17)
                     if source_badge:
                         main_layout.removeView(source_badge)
                         row_cont.addView(source_badge, LH.createLinear(-2, -2, 0, 0, 0, 8, 0))
+                    
                     accent = Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader)
                     bg_color = Theme.getColor(Theme.key_windowBackgroundWhite)
+                    
                     rem_badge = LL(ctx); rem_badge.setOrientation(0); rem_badge.setGravity(17)
                     badge_bg = ColorUtils.blendARGB(bg_color, accent, 0.12)
                     pressed_color = ColorUtils.blendARGB(badge_bg, Theme.getColor(Theme.key_windowBackgroundWhiteBlackText), 0.1)
                     rem_badge.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AU.dp(20), badge_bg, pressed_color))
                     rem_badge.setPadding(AU.dp(14), AU.dp(6), AU.dp(14), AU.dp(6))
+                    
                     t = TV(ctx); t.setText(f"Модули: {len(reqs)}"); t.setTypeface(AU.bold()); t.setTextSize(1, 13.0); t.setTextColor(accent); rem_badge.addView(t)
                     arrow = IV(ctx); arrow.setImageResource(R_tg.drawable.msg_expand); arrow.setColorFilter(PDCF(accent, PDF.Mode.SRC_IN)); 
                     arrow.setScaleX(1.4); arrow.setScaleY(1.4); arrow.setRotation(0.0)
+                    
                     rem_badge.addView(arrow, LH.createLinear(14, 14, 16, 5, 0, 0, 0))
                     row_cont.addView(rem_badge, LH.createLinear(-2, -2))
                     main_layout.addView(row_cont, idx, LH.createLinear(-1, -2, 17, 0, 18, 0, 4)) 
+                    
                     anim_wrapper = LL(ctx)
                     anim_wrapper.setOrientation(1)
                     anim_wrapper.setVisibility(8) 
                     anim_wrapper.setClipChildren(True)
                     anim_wrapper.setClipToPadding(False)
+
                     list_cont = LL(ctx); list_cont.setOrientation(1)
+                    
                     if self.plugin.get_setting("ds_cont_enabled", True):
                         c_color = jint(self.plugin.get_setting("ds_cont_color", Theme.getColor(Theme.key_windowBackgroundGray)))
                         c_rad = int(self.plugin.get_setting("ds_cont_radius", 16))
                         list_cont.setBackground(Theme.createRoundRectDrawable(AU.dp(c_rad), AU.dp(c_rad), c_color))
                         list_cont.setPadding(0, AU.dp(6), 0, AU.dp(6))
+
                     icon_res_name = self.plugin.get_setting("ds_icon_res", "msg_bot")
                     res_id = getattr(R_tg.drawable, icon_res_name, getattr(R_tg.drawable, "msg_bot"))
+                    
                     req_cb_scale = float(self.plugin.get_setting("ds_req_cb_scale", 1.0))
                     req_cb_frame = int(self.plugin.get_setting("ds_req_cb_frame", 26))
                     req_g = int(self.plugin.get_setting("ds_req_gravity", 3))
+
                     for name, info in reqs.items():
                         is_need = "need" in info.lower()
                         row = LL(ctx); row.setPadding(AU.dp(18), AU.dp(10), AU.dp(18), AU.dp(10))
                         row.setBackground(Theme.getSelectorDrawable(False))
                         row.setGravity(16)
+                        
                         puz = IV(ctx); puz.setImageResource(res_id); puz.setColorFilter(PDCF(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon), PDF.Mode.SRC_IN)); 
                         row.addView(puz, LH.createLinear(22, 22, 16, 0, 0, 14, 0))
+                        
                         txt_l = LL(ctx); txt_l.setOrientation(1); txt_l.setGravity(16)
+                        
                         t_n = TV(ctx); t_n.setText(name); t_n.setTextSize(1, 15.0); t_n.setTypeface(AU.bold())
                         t_s = TV(ctx); t_s.setTextSize(1, 12.0)
+                        
                         if is_need:
                             t_n.setGravity(req_g); t_s.setGravity(req_g)
                             t_n.setTextColor(jint(self.plugin.get_setting("ds_req_title_color", Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))))
@@ -911,25 +1172,33 @@ class InstallSheetHook(MethodHook):
                             t_s.setTextColor(jint(self.plugin.get_setting("ds_opt_sub_color", Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))))
                             frame_size = int(self.plugin.get_setting("ds_opt_cb_frame", 26))
                             scale = float(self.plugin.get_setting("ds_opt_cb_scale", 1.0))
+
                         txt_l.addView(t_n, LH.createLinear(-1, -2))
                         txt_l.addView(t_s, LH.createLinear(-1, -2))
                         row.addView(txt_l, LH.createLinear(0, -2, 1.0, 16, 0, 0, 8, 0))
+                        
                         cb = CB(ctx, 21); cb.setDrawBackgroundAsArc(10)
                         cb.setColor(Theme.key_featuredStickers_addButton, Theme.key_windowBackgroundWhite, Theme.key_featuredStickers_buttonText)
                         cb.setChecked(True if is_need else ReLoad.get().choices.get(plugin_id, {}).get(name, True), False)
                         cb.setScaleX(scale); cb.setScaleY(scale)
+                        
                         cb_cont = FrameLayout(ctx)
                         cb_cont.addView(cb, LH.createLinear(-2, -2, 17))
+                        
                         if not is_need: 
                             row.setOnClickListener(OnClickProxy(lambda v, n=name, c=cb: (c.setChecked(not c.isChecked(), True), ReLoad.get().save_choice(plugin_id, n, c.isChecked()))))
                         else: 
                             cb.setEnabled(False)
                             row.setAlpha(0.6) 
+                        
                         row.addView(cb_cont, LH.createLinear(frame_size, frame_size, 16))
                         list_cont.addView(row)
+                    
                     anim_wrapper.addView(list_cont, LH.createLinear(-1, -2, 0, 16, 12, 16, 4))
                     main_layout.addView(anim_wrapper, idx + 1, LH.createLinear(-1, -2))
+                    
                     state = {"full_height": 0, "current_anim": None, "progress": 0.0, "is_expanded": False}
+
                     def toggle_list(v):
                         target_expanded = not state["is_expanded"]
                         state["is_expanded"] = target_expanded
@@ -943,9 +1212,11 @@ class InstallSheetHook(MethodHook):
                             clp = list_cont.getLayoutParams()
                             clp.height = list_cont.getMeasuredHeight()
                             list_cont.setLayoutParams(clp)
+
                         start_val = state["progress"]
                         end_val = 1.0 if target_expanded else 0.0
                         if start_val == end_val: return
+
                         anim = ValueAnimator.ofFloat(jarray(jfloat)([start_val, end_val]))
                         distance = abs(end_val - start_val)
                         anim.setDuration(int(350 * (0.4 + 0.6 * distance)))
@@ -954,7 +1225,9 @@ class InstallSheetHook(MethodHook):
                         anim.addListener(ExpandAnimListener(anim_wrapper))
                         state["current_anim"] = anim
                         anim.start()
+
                     rem_badge.setOnClickListener(OnClickProxy(toggle_list))
+
                 install_btn = None
                 try:
                     f = sheet.getClass().getDeclaredField("button")
@@ -964,6 +1237,7 @@ class InstallSheetHook(MethodHook):
                         if "ButtonWithCounterView" in str(f.getType()):
                             f.setAccessible(True); install_btn = f.get(sheet); break
                 if not install_btn: return
+
                 ViewClass = jclass("android.view.View").getClass()
                 li_field = ViewClass.getDeclaredField("mListenerInfo")
                 li_field.setAccessible(True)
@@ -971,10 +1245,12 @@ class InstallSheetHook(MethodHook):
                 oc_field = l_info.getClass().getDeclaredField("mOnClickListener")
                 oc_field.setAccessible(True)
                 original_click = oc_field.get(l_info)
+
                 try:
                     f_enable = sheet.getClass().getDeclaredField("enableAfterInstallation")
                     f_enable.setAccessible(True)
                 except: f_enable = None
+
                 def on_hijack(v):
                     to_download = {}
                     loader = ReLoad.get()
@@ -984,8 +1260,10 @@ class InstallSheetHook(MethodHook):
                         path = os.path.join(loader.root, f"{name}.so")
                         if (is_need or is_selected) and (not os.path.exists(path) or os.path.getsize(path) < 1024):
                             to_download[name] = info.split(" - ")[0].strip()
+                    
                     should_enable = False
                     if f_enable: should_enable = f_enable.getBoolean(sheet)
+
                     if to_download:
                         try: sheet.dismiss()
                         except: pass
@@ -1002,8 +1280,11 @@ class InstallSheetHook(MethodHook):
                         DependencyProgressSheet(ctx, to_download, perform_install, lambda: None).show()
                     else:
                         original_click.onClick(install_btn)
+
                 install_btn.setOnClickListener(OnClickProxy(on_hijack))
+
             except Exception as e: self.plugin.log(f"UI Hook Error: {e}")
+        
         run_on_ui_thread(modify_ui, delay=150)
 
 class Plugin2IsPluginHook(MethodHook):
@@ -1117,10 +1398,10 @@ class SimpleSeekListener(dynamic_proxy(SeekBar.OnSeekBarChangeListener)):
     def onStartTrackingTouch(self, seekBar): pass
     def onStopTrackingTouch(self, seekBar): pass
 
-UniversalView = jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalView")
-UniversalViewDelegate = jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalView$UniversalViewDelegate")
+UniversalView = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalView")
+UniversalViewDelegate = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalView$UniversalViewDelegate")
 
-class HighlightOverlayDelegate(dynamic_proxy(UniversalViewDelegate)):
+class HighlightOverlayDelegate(dynamic_proxy(UniversalViewDelegate) if UniversalViewDelegate else object):
     def __init__(self):
         super().__init__()
         self.target_rect, self.current_rect = RectF(), RectF()
@@ -1171,11 +1452,11 @@ class HighlightOverlayDelegate(dynamic_proxy(UniversalViewDelegate)):
     def onMeasure(self, w, h, callback): callback.run(Integer(w), Integer(h))
     def onTouchEvent(self, event, callback): return Boolean(callback.run(event))
 
-UniversalFragment = jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalFragment")
-UniversalFragmentDelegate = jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalFragment$UniversalFragmentDelegate")
-CircularProgressIndicator = jclass("com.google.android.material.progressindicator.CircularProgressIndicator")
+UniversalFragment = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalFragment")
+UniversalFragmentDelegate = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalFragment$UniversalFragmentDelegate")
+CircularProgressIndicator = safe_jclass("com.google.android.material.progressindicator.CircularProgressIndicator")
 
-class IconSelectorDelegate(dynamic_proxy(UniversalFragmentDelegate)):
+class IconSelectorDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
     def __init__(self, callback):
         super().__init__(); self.callback = callback; self.search_et, self.grid_layout, self.fragment, self.progress, self.search_timer = None, None, None, None, None
         self.all_icons, self.icon_map = [], {}
@@ -1209,14 +1490,15 @@ class IconSelectorDelegate(dynamic_proxy(UniversalFragmentDelegate)):
         self.search_et = EditTextBoldCursor(context); self.search_et.setTextSize(1, 16.0); self.search_et.setHintTextColor(jint(Theme.getColor(Theme.key_dialogSearchHint))); self.search_et.setTextColor(jint(Theme.getColor(Theme.key_dialogSearchText))); self.search_et.setBackgroundDrawable(None); self.search_et.setPadding(0,0,0,0); self.search_et.setSingleLine(True); self.search_et.setHint("Поиск иконки (msg_...)"); self.search_et.setCursorColor(jint(Theme.getColor(Theme.key_featuredStickers_addedIcon))); self.search_et.setImeOptions(jclass("android.view.inputmethod.EditorInfo").IME_ACTION_SEARCH | jclass("android.view.inputmethod.EditorInfo").IME_FLAG_NO_EXTRACT_UI)
         self.search_et.setOnClickListener(OnClickProxy(lambda v: (self.search_et.requestFocus(), AndroidUtilities.showKeyboard(self.search_et)))); search_cont.addView(self.search_et, LayoutHelper.createFrame(-1, 36, 51, 54, 0, 14, 0)); root.addView(search_cont, LayoutHelper.createFrame(-1, 52, 48))
         scroll = ScrollView(context); self.grid_layout = GridLayout(context); self.grid_layout.setColumnCount(4); self.grid_layout.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(16), AndroidUtilities.dp(16), AndroidUtilities.dp(16)); scroll.addView(self.grid_layout); root.addView(scroll, LayoutHelper.createFrame(-1, -1, 48, 0, 52, 0, 0))
-        self.progress = CircularProgressIndicator(context); self.progress.setIndeterminate(True); self.progress.setIndicatorColor(jint(Theme.getColor(Theme.key_featuredStickers_addButton))); self.progress.setVisibility(8); root.addView(self.progress, LayoutHelper.createFrame(48, 48, 17))
+        if CircularProgressIndicator:
+            self.progress = CircularProgressIndicator(context); self.progress.setIndeterminate(True); self.progress.setIndicatorColor(jint(Theme.getColor(Theme.key_featuredStickers_addButton))); self.progress.setVisibility(8); root.addView(self.progress, LayoutHelper.createFrame(48, 48, 17))
         self.populate("", context)
         class TextChangeProxy(dynamic_proxy(jclass("android.text.TextWatcher"))):
             def __init__(self, d, ctx): super().__init__(); self.d, self.ctx = d, ctx
             def afterTextChanged(self, s):
                 query = str(s.toString())
                 if self.d.search_timer: self.d.search_timer.cancel()
-                if len(query) > 0: self.d.progress.setVisibility(0); self.d.grid_layout.setAlpha(0.3)
+                if len(query) > 0 and self.d.progress: self.d.progress.setVisibility(0); self.d.grid_layout.setAlpha(0.3)
                 self.d.search_timer = threading.Timer(0.8, lambda: run_on_ui_thread(lambda: self.d.populate(query, self.ctx))); self.d.search_timer.start()
             def beforeTextChanged(self, s, st, c, a): pass
             def onTextChanged(self, s, st, b, c): pass
@@ -1237,7 +1519,7 @@ class IconSelectorDelegate(dynamic_proxy(UniversalFragmentDelegate)):
                     if count >= 60 and not query: break 
                     if count >= 300 and query: break 
                 except: pass
-        self.progress.setVisibility(8); self.grid_layout.setAlpha(1.0)
+        if self.progress: self.progress.setVisibility(8); self.grid_layout.setAlpha(1.0)
 
 class DesignStudioController:
     def __init__(self, context, plugin, base_fragment):
@@ -1273,7 +1555,9 @@ class DesignStudioController:
         self.ui_elements['opt_title'] = jclass("android.widget.TextView")(self.context); self.ui_elements['opt_title'].setText("Название зависимости"); self.ui_elements['opt_title'].setTextSize(1, 15.0); self.ui_elements['opt_title'].setTypeface(AndroidUtilities.bold()); self.ui_elements['tl2'].addView(self.ui_elements['opt_title'], LayoutHelper.createLinear(-1, -2))
         self.ui_elements['opt_sub'] = jclass("android.widget.TextView")(self.context); self.ui_elements['opt_sub'].setTextSize(1, 12.0); self.ui_elements['tl2'].addView(self.ui_elements['opt_sub'], LayoutHelper.createLinear(-1, -2)); self.ui_elements['row_opt'].addView(self.ui_elements['tl2'], LayoutHelper.createLinear(0, -2, 1.0, 16, 0, 0, 8, 0))
         self.ui_elements['opt_cb'] = jclass("org.telegram.ui.Components.CheckBox2")(self.context, 21); self.ui_elements['opt_cb'].setDrawBackgroundAsArc(10); self.ui_elements['opt_cb'].setChecked(True, False); self.ui_elements['opt_cb_container'] = FrameLayout(self.context); self.ui_elements['opt_cb_container'].addView(self.ui_elements['opt_cb'], LayoutHelper.createFrame(-2, -2, 17)); self.ui_elements['row_opt'].addView(self.ui_elements['opt_cb_container']); self.ui_elements['container'].addView(self.ui_elements['row_req']); self.ui_elements['container'].addView(self.ui_elements['row_opt']); anim_wrapper.addView(self.ui_elements['container'], LayoutHelper.createLinear(-1, -2)); list_root.addView(anim_wrapper, LayoutHelper.createLinear(-1, -2)); self.preview_container.addView(list_root, LayoutHelper.createFrame(-1, -2, 17))
-        self.overlay_delegate = HighlightOverlayDelegate(); self.overlay_view = UniversalView(self.context, self.overlay_delegate); self.overlay_delegate.view = self.overlay_view; self.preview_container.addView(self.overlay_view, LayoutHelper.createFrame(-1, -1)); self.root_view.addView(self.preview_container, LayoutHelper.createLinear(-1, -2))
+        if UniversalView:
+            self.overlay_delegate = HighlightOverlayDelegate(); self.overlay_view = UniversalView(self.context, self.overlay_delegate); self.overlay_delegate.view = self.overlay_view; self.preview_container.addView(self.overlay_view, LayoutHelper.createFrame(-1, -1))
+        self.root_view.addView(self.preview_container, LayoutHelper.createLinear(-1, -2))
         self._setup_click(self.ui_elements['container'], 'container', is_container=True); self._setup_click(self.ui_elements['icon_req'], 'icon'); self._setup_click(self.ui_elements['icon_opt'], 'icon'); self._setup_click(self.ui_elements['tl1'], 'req_text'); self._setup_click(self.ui_elements['tl2'], 'opt_text'); self._setup_click(self.ui_elements['req_cb_container'], 'req_checkbox'); self._setup_click(self.ui_elements['opt_cb_container'], 'opt_checkbox')
         anim_state = {"full_height": 0, "current_anim": None, "progress": 0.0, "is_expanded": False}
         def badge_toggle(v):
@@ -1288,7 +1572,7 @@ class DesignStudioController:
         badge.setOnClickListener(OnClickProxy(badge_toggle)); divider = View(self.context); divider.setBackgroundColor(jint(Theme.getColor(Theme.key_divider))); self.root_view.addView(divider, LayoutHelper.createLinear(-1, 1)); self.settings_scroll = ScrollView(self.context); self.settings_scroll.setFillViewport(True); self.settings_scroll.setClipToPadding(False); self.settings_container = LinearLayout(self.context); self.settings_container.setOrientation(LinearLayout.VERTICAL); self.settings_container.setPadding(0, AndroidUtilities.dp(8), 0, AndroidUtilities.dp(16)); self.settings_scroll.addView(self.settings_container, LayoutHelper.createScroll(-1, -2, 0)); self.root_view.addView(self.settings_scroll, LayoutHelper.createLinear(-1, -1, 1.0)); self._clear_selection() 
 
     def _setup_click(self, view, type_str, is_container=False):
-        view.setOnClickListener(OnClickProxy(lambda v, t=type_str, is_cont=is_container: (rad := (self.plugin.get_setting("ds_cont_radius", 16) if is_cont else 6), self.overlay_delegate.setTarget(view, self.mock_list, rad), self._open_settings_for(t))))
+        view.setOnClickListener(OnClickProxy(lambda v, t=type_str, is_cont=is_container: (rad := (self.plugin.get_setting("ds_cont_radius", 16) if is_cont else 6), self.overlay_delegate.setTarget(view, self.mock_list, rad) if self.overlay_delegate else None, self._open_settings_for(t))))
 
     def _update_preview_from_settings(self, animate=True):
         try:
@@ -1298,7 +1582,7 @@ class DesignStudioController:
                 color, rad = jint(self.plugin.get_setting("ds_cont_color", Theme.getColor(Theme.key_windowBackgroundGray))), self.plugin.get_setting("ds_cont_radius", 16)
                 self.ui_elements['container'].setBackground(Theme.createRoundRectDrawable(AndroidUtilities.dp(rad), AndroidUtilities.dp(rad), color)); self.ui_elements['container'].setPadding(0, AndroidUtilities.dp(6), 0, AndroidUtilities.dp(6))
             else: self.ui_elements['container'].setBackground(None); self.ui_elements['container'].setPadding(0, 0, 0, 0)
-            if self.current_target == 'container': self.overlay_delegate.setTarget(self.ui_elements['container'], self.mock_list, (self.plugin.get_setting("ds_cont_radius", 16) if has_cont else 0))
+            if self.current_target == 'container' and self.overlay_delegate: self.overlay_delegate.setTarget(self.ui_elements['container'], self.mock_list, (self.plugin.get_setting("ds_cont_radius", 16) if has_cont else 0))
             R_draw = jclass("org.telegram.messenger.R").drawable; res_id = getattr(R_draw, self.plugin.get_setting("ds_icon_res", "msg_bot"), R_draw.msg_bot); self.ui_elements['icon_req'].setImageResource(res_id); self.ui_elements['icon_opt'].setImageResource(res_id)
             self.ui_elements['req_title'].setTextColor(jint(self.plugin.get_setting("ds_req_title_color", Theme.getColor(Theme.key_windowBackgroundWhiteBlackText)))); self.ui_elements['req_sub'].setText(self.plugin.get_setting("ds_req_sub_text", "Обязательно")); self.ui_elements['req_sub'].setTextColor(jint(self.plugin.get_setting("ds_req_sub_color", Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))))
             self.ui_elements['opt_title'].setTextColor(jint(self.plugin.get_setting("ds_opt_title_color", Theme.getColor(Theme.key_windowBackgroundWhiteBlackText)))); self.ui_elements['opt_sub'].setText(self.plugin.get_setting("ds_opt_sub_text", "Опционально")); self.ui_elements['opt_sub'].setTextColor(jint(self.plugin.get_setting("ds_opt_sub_color", Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))))
@@ -1306,8 +1590,8 @@ class DesignStudioController:
             opt_g = self.plugin.get_setting("ds_opt_gravity", 3); self.ui_elements['opt_title'].setGravity(opt_g); self.ui_elements['opt_sub'].setGravity(opt_g); self.ui_elements['tl2'].setGravity(opt_g)
             self.ui_elements['req_cb'].setColor(Theme.key_featuredStickers_addButton, Theme.key_windowBackgroundWhite, Theme.key_featuredStickers_buttonText); req_cb_scale = float(self.plugin.get_setting("ds_req_cb_scale", 1.0)); req_cb_frame = int(self.plugin.get_setting("ds_req_cb_frame", 26)); self.ui_elements['req_cb'].setScaleX(req_cb_scale); self.ui_elements['req_cb'].setScaleY(req_cb_scale); self.ui_elements['req_cb_container'].setLayoutParams(LayoutHelper.createLinear(req_cb_frame, req_cb_frame, 16))
             self.ui_elements['opt_cb'].setColor(Theme.key_featuredStickers_addButton, Theme.key_windowBackgroundWhite, Theme.key_featuredStickers_buttonText); opt_cb_scale = float(self.plugin.get_setting("ds_opt_cb_scale", 1.0)); opt_cb_frame = int(self.plugin.get_setting("ds_opt_cb_frame", 26)); self.ui_elements['opt_cb'].setScaleX(opt_cb_scale); self.ui_elements['opt_cb'].setScaleY(opt_cb_scale); self.ui_elements['opt_cb_container'].setLayoutParams(LayoutHelper.createLinear(opt_cb_frame, opt_cb_frame, 16))
-            if self.current_target == 'req_checkbox': self.overlay_delegate.setTarget(self.ui_elements['req_cb_container'], self.mock_list, 6)
-            elif self.current_target == 'opt_checkbox': self.overlay_delegate.setTarget(self.ui_elements['opt_cb_container'], self.mock_list, 6)
+            if self.current_target == 'req_checkbox' and self.overlay_delegate: self.overlay_delegate.setTarget(self.ui_elements['req_cb_container'], self.mock_list, 6)
+            elif self.current_target == 'opt_checkbox' and self.overlay_delegate: self.overlay_delegate.setTarget(self.ui_elements['opt_cb_container'], self.mock_list, 6)
         except Exception as e: self.plugin.log(f"UPDATE PREVIEW ERROR: {e}")
 
     def _open_settings_for(self, type_str):
@@ -1392,388 +1676,266 @@ class DesignStudioController:
         btn.setOnClickListener(OnClickProxy(lambda v: self._show_icons_bottom_sheet())); self.settings_container.addView(btn, LayoutHelper.createLinear(-1, -2, 23, 16, 23, 0))
 
     def _show_icons_bottom_sheet(self):
-        try: delegate = IconSelectorDelegate(lambda name: (self.plugin.set_setting("ds_icon_res", name), self._update_preview_from_settings(animate=False))); fragment = UniversalFragment(delegate); delegate.fragment = fragment; self.base_fragment.presentFragment(fragment)
+        try:
+            if not UniversalFragment: return BulletinHelper.show_error("Design Studio недоступен в данной версии клиента")
+            delegate = IconSelectorDelegate(lambda name: (self.plugin.set_setting("ds_icon_res", name), self._update_preview_from_settings(animate=False))); fragment = UniversalFragment(delegate); delegate.fragment = fragment; self.base_fragment.presentFragment(fragment)
         except Exception as e: self.plugin.log(f"ICON SHEET ERROR: {e}")
 
 class ReMeowLib(BasePlugin):
     BANNER_URL = "https://raw.githubusercontent.com/Yareks/plugins/main/banner.png"
-    MANIFEST_URL = "https://raw.githubusercontent.com/Yareks/plugins/main/plugin.txt"
 
     def on_plugin_load(self):
-        if is_safe_mode():
-            mlog("SAFE MODE ACTIVE: ReMeow Core will not load native extensions.")
-            return
-        mlog("Plugin initializing...")
-        try:
-            sys.modules["ReMeow"] = sys.modules[self.__class__.__module__]
-        except:
-            pass
-
+        if is_safe_mode(): mlog("SAFE MODE ACTIVE: ReMeow Core will not load native extensions."); return
+        mlog("Plugin initializing..."); (sys.modules.update({"ReMeow": sys.modules[self.__class__.__module__]}) if self.__class__.__module__ in sys.modules else None)
+        
         loader = ReLoad.get()
         banner_path = os.path.join(loader.root, "dwd_banner.png")
         threading.Thread(target=lambda: SafeDownloader.download(self.BANNER_URL, banner_path), daemon=True).start()
-
+        
         try:
             Class = jclass("java.lang.Class")
-            sheet_cls = Class.forName("com.exteragram.messenger.plugins.ui.components.InstallPluginBottomSheet")
-            self.hook_method(sheet_cls.getDeclaredConstructors()[0], InstallSheetHook(self))
-            engine_cls = Class.forName("com.exteragram.messenger.plugins.PythonPluginsEngine")
-            self.hook_method(engine_cls.getDeclaredMethod("isPlugin", jclass("java.io.File"), jclass("org.telegram.messenger.MessageObject")), Plugin2IsPluginHook(self))
-            self.hook_method(engine_cls.getDeclaredMethod("showInstallDialog", jclass("org.telegram.ui.ActionBar.BaseFragment"), jclass("com.exteragram.messenger.plugins.ui.components.InstallPluginBottomSheet$PluginInstallParams")), Plugin2InstallHook(self))
-            self.hook_method(engine_cls.getDeclaredMethod("sharePlugin", jclass("java.lang.String")), Plugin2ShareHook(self))
-        except:
-            pass
-
+            # 1. InstallPluginBottomSheet Hook
+            try:
+                sheet_target = Class.forName("com.exteragram.messenger.plugins.ui.components.InstallPluginBottomSheet")
+                sheet_ctors = sheet_target.getDeclaredConstructors()
+                if sheet_ctors and len(sheet_ctors) > 0:
+                    self.hook_method(sheet_ctors[0], InstallSheetHook(self))
+            except Exception as ex_h1:
+                mlog(f"Hooking failed: InstallSheet {ex_h1}")
+            
+            # 2. PythonPluginsEngine Hooks
+            try:
+                engine_target = Class.forName("com.exteragram.messenger.plugins.PythonPluginsEngine")
+                
+                # isPlugin
+                try:
+                    m_is_plugin = engine_target.getDeclaredMethod("isPlugin", jarray(Class)([jclass("java.io.File").getClass(), jclass("org.telegram.messenger.MessageObject").getClass()]))
+                    self.hook_method(m_is_plugin, Plugin2IsPluginHook(self))
+                except: pass
+                
+                # showInstallDialog
+                try:
+                    params_target = Class.forName("com.exteragram.messenger.plugins.ui.components.InstallPluginBottomSheet$PluginInstallParams")
+                    m_install = engine_target.getDeclaredMethod("showInstallDialog", jarray(Class)([jclass("org.telegram.ui.ActionBar.BaseFragment").getClass(), params_target]))
+                    self.hook_method(m_install, Plugin2InstallHook(self))
+                except: pass
+                
+                # sharePlugin
+                try:
+                    m_share = engine_target.getDeclaredMethod("sharePlugin", jarray(Class)([jclass("java.lang.String").getClass()]))
+                    self.hook_method(m_share, Plugin2ShareHook(self))
+                except: pass
+                
+            except Exception as ex_h2:
+                mlog(f"Hooking failed: EngineHooks {ex_h2}")
+                
+        except Exception as e: mlog(f"Global Hooking Error: {e}")
+        
         self.banner_list = []
         self.last_banner_path = ""
-        self.latest_version_on_gh = None
-
+        self.available_updates_cache = []
+        
         self._check_and_install_deps_ui()
         self.add_on_send_message_hook()
-
-        # Запускаем все проверки в фоне
-        threading.Thread(target=self._full_update_check, daemon=True).start()
+        
+        threading.Thread(target=self._perform_initial_check, daemon=True).start()
         threading.Thread(target=self._precache_stickers, daemon=True).start()
         threading.Thread(target=self._start_banner_rotation, daemon=True).start()
 
-    def _full_update_check(self):
-        """При инициализации: проверяет версии ReMeow, MeowWG и баннеры, обновляет при необходимости"""
-        mlog("Запуск полной проверки обновлений...")
-        self._check_and_update_self()
-        self._check_and_update_meowwg()
-        self._check_and_update_banners()
-        mlog("Полная проверка завершена")
-
-    def _check_and_update_self(self):
-        """Проверяет версию ReMeow через manifest, при наличии новой версии запускает установщик"""
+    def _perform_initial_check(self, silent=True):
+        global _UPDATE_SHOWN_THIS_SESSION
+        mlog("ReMeow: Синхронизация манифеста...")
         try:
-            res = requests.get(self.MANIFEST_URL, timeout=10)
-            if res.status_code != 200:
-                return
-            for line in res.text.splitlines():
-                if " - " not in line:
-                    continue
+            manifest_url = "https://raw.githubusercontent.com/Yareks/plugins/main/plugin.txt"
+            res = requests.get(manifest_url, timeout=15)
+            if res.status_code != 200: return
+            
+            lines = res.text.splitlines()
+            updates_list = []
+            
+            remote_rem_ver = None
+            remote_rem_url = None
+            remote_wg_ver = None
+            remote_wg_u, remote_wg_r, remote_wg_p = None, None, None
+
+            for line in lines:
+                if " - " not in line: continue
                 key, val = [x.strip() for x in line.split(" - ", 1)]
-                if key == "Lib installer":
-                    installer_url = val
-                    if not installer_url.startswith("http"):
-                        parts = installer_url.split("/", 2)
-                        if len(parts) >= 3:
-                            user, repo, path = parts[0], parts[1], parts[2]
-                            installer_url = f"https://raw.githubusercontent.com/{user}/{repo}/main/{path}"
-                    # Получаем версию из установщика (или из самого ReMeow)
-                    remote_version = SafeDownloader.get_remote_version(installer_url.replace("ReMeow_Updater.plugin", "ReMeow.plugin"))
-                    if remote_version and remote_version != __version__:
-                        mlog(f"Найдена новая версия ReMeow: {remote_version} (текущая {__version__})")
-                        run_on_ui_thread(lambda: BulletinHelper.show_info(f"Обновление ReMeow до {remote_version}..."))
-                        self._download_and_run_installer(installer_url)
-                    else:
-                        mlog("ReMeow актуален")
-                    return
-        except Exception as e:
-            mlog(f"Ошибка проверки ReMeow: {e}")
+                
+                if key == "Lib":
+                    remote_rem_url = val
+                    if not remote_rem_url.startswith("http"):
+                        p = remote_rem_url.split("/", 2)
+                        if len(p) >= 3: remote_rem_url = f"https://raw.githubusercontent.com/{p[0]}/{p[1]}/main/{p[2]}"
+                elif key == "MeowWG":
+                    p = val.split("/")
+                    if len(p) >= 3: remote_wg_u, remote_wg_r, remote_wg_p = p[0], p[1], "/".join(p[2:])
 
-    def _check_and_update_meowwg(self):
-        """Проверяет версию MeowWG через manifest, обновляет если нужно"""
+            if remote_rem_url:
+                try:
+                    r_res = requests.get(remote_rem_url, timeout=10)
+                    if r_res.status_code == 200:
+                        m = re.search(r'__version__\s*=\s*"(.*?)"', r_res.text)
+                        if m:
+                            remote_rem_ver = m.group(1)
+                            if remote_rem_ver != __version__:
+                                updates_list.append({
+                                    'id': 'remeow', 'name': 'ReMeow Lib', 'old': __version__, 'new': remote_rem_ver,
+                                    'icon_str': 'Plugin2/1', 'url': remote_rem_url
+                                })
+                except: pass
+
+            if remote_wg_u:
+                try:
+                    PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
+                    wg_p = PC.plugins.get("MeowWG")
+                    local_wg_v = str(wg_p.getVersion()) if wg_p else "0.0.0"
+                    
+                    raw_wg = f"https://raw.githubusercontent.com/{remote_wg_u}/{remote_wg_r}/main/{remote_wg_p}"
+                    wg_res = requests.get(raw_wg, timeout=10)
+                    if wg_res.status_code == 200:
+                        m = re.search(r'__version__\s*=\s*"(.*?)"', wg_res.text)
+                        if m:
+                            remote_wg_ver = m.group(1)
+                            if remote_wg_ver != local_wg_v:
+                                updates_list.append({
+                                    'id': 'meowwg', 'name': 'MeowWG', 'old': local_wg_v, 'new': remote_wg_ver,
+                                    'icon_str': 'Plugin2/0', 'u': remote_wg_u, 'r': remote_wg_r, 'p': remote_wg_p
+                                })
+                except: pass
+
+            self.available_updates_cache = updates_list
+
+            if updates_list and (not silent or not _UPDATE_SHOWN_THIS_SESSION):
+                def show_sheet():
+                    act = jclass("org.telegram.ui.LaunchActivity").instance
+                    if not act:
+                        frag = get_last_fragment()
+                        if frag: act = frag.getParentActivity()
+                    if act: UpdateNotificationSheet(act, updates_list, self._execute_updates).show()
+                run_on_ui_thread(show_sheet)
+
+        except Exception as e: mlog(f"Check update error: {e}")
+
+    def _execute_updates(self):
+        BulletinHelper.show_info("Запуск процесса обновления...")
+        for upd in self.available_updates_cache:
+            if upd['id'] == 'remeow':
+                threading.Thread(target=self._update_self, args=(upd['url'],), daemon=True).start()
+            elif upd['id'] == 'meowwg':
+                threading.Thread(target=self._gh_start_download, args=(upd['u'], upd['r'], upd['p'], "ReMeow_Companion"), kwargs={'enable_after': True}, daemon=True).start()
+
+    def _update_self(self, url):
         try:
-            res = requests.get(self.MANIFEST_URL, timeout=10)
-            if res.status_code != 200:
+            tmp = os.path.join(ReLoad.get().root, "rem_upd.tmp")
+            if not SafeDownloader.download(url, tmp): return
+            
+            my_path = self._find_self_path()
+            if not my_path: 
+                mlog("Update failed: Path to self not found!")
                 return
-            for line in res.text.splitlines():
-                if " - " not in line:
-                    continue
-                key, val = [x.strip() for x in line.split(" - ", 1)]
-                if key == "MeowWG":
-                    parts = val.split("/")
-                    if len(parts) >= 3:
-                        user, repo, path = parts[0], parts[1], "/".join(parts[2:])
-                        remote_version = SafeDownloader.get_remote_version(f"https://raw.githubusercontent.com/{user}/{repo}/main/{path}")
-                        if not remote_version:
-                            return
-                        PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
-                        local_plugin = PC.plugins.get("MeowWG") if PC else None
-                        local_version = str(local_plugin.getVersion()) if local_plugin else "0.0.0"
-                        if remote_version != local_version:
-                            mlog(f"Обновление MeowWG: {local_version} -> {remote_version}")
-                            run_on_ui_thread(lambda: BulletinHelper.show_info(f"Обновление MeowWG до {remote_version}..."))
-                            self._gh_start_download(user, repo, path, "ReMeow_Companion", enable_after=True)
-                        else:
-                            mlog("MeowWG актуален")
-                    return
-        except Exception as e:
-            mlog(f"Ошибка проверки MeowWG: {e}")
+            
+            try:
+                shutil.copyfile(tmp, my_path)
+            except PermissionError:
+                with open(tmp, 'rb') as src, open(my_path, 'wb') as dst:
+                    dst.write(src.read())
+            
+            if os.path.exists(tmp): os.remove(tmp)
+            run_on_ui_thread(lambda: BulletinHelper.show_success("ReMeow обновлен! Перезапустите приложение."))
+        except Exception as e: 
+            mlog(f"Self update error: {e}")
+            run_on_ui_thread(lambda: BulletinHelper.show_error("Ошибка обновления! См. логи."))
 
-    def _check_and_update_banners(self):
-        """Проверяет обновление баннеров по manifest, скачивает новые при изменении"""
+    def _find_self_path(self):
         try:
-            res = requests.get(self.MANIFEST_URL, timeout=10)
-            if res.status_code != 200:
-                return
-            for line in res.text.splitlines():
-                if " - " not in line:
-                    continue
-                key, val = [x.strip() for x in line.split(" - ", 1)]
-                if key == "Banner":
-                    parts = val.split("/", 2)
-                    if len(parts) >= 3:
-                        user, repo, paths_str = parts[0], parts[1], parts[2]
-                        paths = [p.strip() for p in paths_str.split(",")]
-                        banner_dir = os.path.join(ReLoad.get().root, "banners")
-                        os.makedirs(banner_dir, exist_ok=True)
-                        updated = False
-                        new_list = []
-                        for idx, b_path in enumerate(paths):
-                            clean_path = b_path
-                            if clean_path.startswith(f"{user}/{repo}/"):
-                                clean_path = clean_path[len(f"{user}/{repo}/"):]
-                            b_url = f"https://raw.githubusercontent.com/{user}/{repo}/main/{clean_path}"
-                            local_path = os.path.join(banner_dir, f"banner_{idx}.png")
-                            remote_tag = SafeDownloader.get_remote_etag_or_length(b_url)
-                            local_tag = None
-                            if os.path.exists(local_path):
-                                local_tag = str(os.path.getsize(local_path))
-                            if remote_tag and remote_tag != local_tag:
-                                mlog(f"Баннер {idx} изменился, скачиваем...")
-                                if SafeDownloader.download(b_url, local_path):
-                                    updated = True
-                                    new_list.append(local_path)
-                                else:
-                                    mlog(f"Не удалось скачать баннер {idx}")
-                            elif os.path.exists(local_path):
-                                new_list.append(local_path)
-                        if updated and new_list:
-                            self.banner_list = new_list
-                            if self.banner_list:
-                                self.last_banner_path = self.banner_list[0]
-                                run_on_ui_thread(lambda: self._apply_banner_with_fade(self.last_banner_path))
-                        elif not self.banner_list and new_list:
-                            self.banner_list = new_list
-                            if self.banner_list:
-                                self.last_banner_path = self.banner_list[0]
-                                run_on_ui_thread(lambda: self._apply_banner_with_fade(self.last_banner_path))
-                    return
-        except Exception as e:
-            mlog(f"Ошибка проверки баннеров: {e}")
+            PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
+            engine = PC.engines.get("python")
+            if engine:
+                path = engine.getPluginPath(__id__)
+                if path: return str(path)
 
-    def _download_and_run_installer(self, installer_url):
-        """Скачивает установщик и запускает его через PluginController, после чего удаляет"""
-        try:
+            mod = sys.modules.get(self.__class__.__module__)
+            if mod and hasattr(mod, '__file__') and mod.__file__:
+                return str(mod.__file__)
+            
             ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
-            cache_dir = ctx.getCacheDir().getAbsolutePath()
-            installer_path = os.path.join(cache_dir, "ReMeow_Updater.plugin")
-            if SafeDownloader.download(installer_url, installer_path):
-                mlog("Установщик загружен, запускаем...")
-                PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
-                engine = PC.engines.get("python")
-                if engine:
-                    engine.loadPluginFromFile(installer_path, None, None)
-                    mlog("Установщик запущен, он выполнит обновление и самоудалится")
-                else:
-                    self._run_installer_direct(installer_path)
-            else:
-                mlog("Не удалось скачать установщик")
-        except Exception as e:
-            mlog(f"Ошибка запуска установщика: {e}")
-
-    def _run_installer_direct(self, installer_path):
-        """Прямой импорт и запуск (fallback)"""
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("ReMeow_Updater", installer_path)
-            if spec:
-                module = importlib.util.module_from_spec(spec)
-                sys.modules["ReMeow_Updater"] = module
-                spec.loader.exec_module(module)
-                for attr_name in dir(module):
-                    attr = getattr(module, attr_name)
-                    if isinstance(attr, type) and issubclass(attr, BasePlugin) and attr != BasePlugin:
-                        updater = attr()
-                        updater.on_plugin_load()
-                        mlog("Установщик запущен напрямую")
-                        return
-            mlog("Не удалось запустить установщик")
-        except Exception as e:
-            mlog(f"Прямой запуск не удался: {e}")
+            search_dirs = [
+                os.path.join(str(ctx.getFilesDir()), "plugins"),
+                os.path.join(str(ctx.getFilesDir()), "AyuGram Files"),
+                "/storage/emulated/0/Android/data/" + str(ctx.getPackageName()) + "/files/Exteragram Files/",
+            ]
+            
+            for base_dir in search_dirs:
+                if os.path.exists(base_dir):
+                    for f in os.listdir(base_dir):
+                        if f.endswith(".plugin") or f.endswith(".py"):
+                            f_p = os.path.join(base_dir, f)
+                            with open(f_p, 'r', encoding='utf-8', errors='ignore') as pf:
+                                head = pf.read(1024)
+                                if f'__id__ = "{__id__}"' in head or f'__id__="{__id__}"' in head:
+                                    return f_p
+        except Exception as e: mlog(f"Self-path search error: {e}")
+        return None
 
     def _gh_start_download(self, user, repo, path, folder_name, branch="main", enable_after=False) -> bool:
         clean_path = path
         if clean_path.startswith(f"{user}/{repo}/"):
             clean_path = clean_path[len(f"{user}/{repo}/"):]
+            
         raw_url = f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{clean_path}"
-        ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
-        cache_dir = ctx.getCacheDir().getAbsolutePath()
-        dest = os.path.join(cache_dir, f"MeowWG_{int(time.time())}.plugin")
+        dest_dir = os.path.join(str(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()), folder_name)
+        if not os.path.exists(dest_dir): os.makedirs(dest_dir)
+        dest = os.path.join(dest_dir, clean_path.split("/")[-1])
+        
         success = SafeDownloader.download(raw_url, dest)
         if not success and branch == "main":
-            return self._gh_start_download(user, repo, clean_path, folder_name, "master", enable_after)
+            return self._gh_start_download(user, repo, clean_path, folder_name, branch="master", enable_after=enable_after)
         if success:
-            run_on_ui_thread(lambda: BulletinHelper.show_success("MeowWG загружен"))
-            PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
-            engine = PC.engines.get("python")
-            if engine:
-                engine.loadPluginFromFile(dest, None, None)
-                if enable_after:
-                    def enable_plugin():
-                        time.sleep(2)
-                        PC.setPluginEnabled("MeowWG", True, None)
-                        run_on_ui_thread(lambda: BulletinHelper.show_success("MeowWG включён!"))
-                    threading.Thread(target=enable_plugin, daemon=True).start()
-                threading.Thread(target=lambda: (time.sleep(10), os.remove(dest) if os.path.exists(dest) else None), daemon=True).start()
-            return True
-        return False
+            run_on_ui_thread(lambda: BulletinHelper.show_success(f"Загружено в Downloads/{folder_name}"))
+            if dest.lower().endswith(".plugin"):
+                try:
+                    PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
+                    engine = PC.engines.get("python")
+                    if engine:
+                        class EnableCallback(dynamic_proxy(jclass("org.telegram.messenger.Utilities$Callback"))):
+                            def __init__(self, plugin_id):
+                                super().__init__()
+                                self.plugin_id = plugin_id
+                            def run(self, error):
+                                if not error and enable_after:
+                                    def enable_plugin():
+                                        time.sleep(1.5)
+                                        PC.setPluginEnabled(self.plugin_id, True, None)
+                                    threading.Thread(target=enable_plugin, daemon=True).start()
+                        engine.loadPluginFromFile(dest, None, EnableCallback("MeowWG"))
+                except: pass
+        return success
 
     def _start_banner_rotation(self):
         while True:
             time.sleep(25)
-            if not self.banner_list or len(self.banner_list) < 2:
-                continue
+            if not self.banner_list or len(self.banner_list) < 2: continue
             choices = [p for p in self.banner_list if p != self.last_banner_path]
-            if not choices:
-                choices = self.banner_list
+            if not choices: choices = self.banner_list
             new_banner = random.choice(choices)
             self.last_banner_path = new_banner
             self._apply_banner_with_fade(new_banner)
 
     def _apply_banner_with_fade(self, path):
-        if not hasattr(self, 'last_banner_iv') or not self.last_banner_iv:
-            return
+        if not hasattr(self, 'last_banner_iv') or not self.last_banner_iv: return
         def _task():
             try:
                 bmp = BitmapFactory.decodeFile(path)
-                if not bmp:
-                    return
+                if not bmp: return
                 iv = self.last_banner_iv
                 iv.animate().alpha(0.0).setDuration(600).withEndAction(ActionRunnable(lambda: (
                     iv.setImageBitmap(bmp),
                     iv.animate().alpha(1.0).setDuration(600).start()
                 ))).start()
-            except:
-                pass
+            except: pass
         run_on_ui_thread(_task)
 
-    # ---- Кнопка обновления в настройках ----
-    def update_all_components(self, view):
-        """Вызывается при нажатии на кнопку 'Обновить'"""
-        def check_task():
-            updates = []
-            # Проверяем ReMeow
-            remote_remeow = None
-            try:
-                res = requests.get(self.MANIFEST_URL, timeout=10)
-                if res.status_code == 200:
-                    for line in res.text.splitlines():
-                        if " - " not in line:
-                            continue
-                        key, val = [x.strip() for x in line.split(" - ", 1)]
-                        if key == "Lib installer":
-                            installer_url = val
-                            if not installer_url.startswith("http"):
-                                parts = installer_url.split("/", 2)
-                                if len(parts) >= 3:
-                                    user, repo, path = parts[0], parts[1], parts[2]
-                                    installer_url = f"https://raw.githubusercontent.com/{user}/{repo}/main/{path}"
-                            remote_remeow = SafeDownloader.get_remote_version(installer_url.replace("ReMeow_Updater.plugin", "ReMeow.plugin"))
-                            break
-            except:
-                pass
-            if remote_remeow and remote_remeow != __version__:
-                updates.append("ReMeow")
-
-            # Проверяем MeowWG
-            remote_wg = None
-            try:
-                res = requests.get(self.MANIFEST_URL, timeout=10)
-                if res.status_code == 200:
-                    for line in res.text.splitlines():
-                        if " - " not in line:
-                            continue
-                        key, val = [x.strip() for x in line.split(" - ", 1)]
-                        if key == "MeowWG":
-                            parts = val.split("/")
-                            if len(parts) >= 3:
-                                user, repo, path = parts[0], parts[1], "/".join(parts[2:])
-                                remote_wg = SafeDownloader.get_remote_version(f"https://raw.githubusercontent.com/{user}/{repo}/main/{path}")
-                            break
-            except:
-                pass
-            PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
-            local_wg = PC.plugins.get("MeowWG") if PC else None
-            local_wg_ver = str(local_wg.getVersion()) if local_wg else "0.0.0"
-            if remote_wg and remote_wg != local_wg_ver:
-                updates.append("MeowWG")
-
-            # Проверяем баннеры (если хотя бы один изменился)
-            banner_update_needed = False
-            try:
-                res = requests.get(self.MANIFEST_URL, timeout=10)
-                if res.status_code == 200:
-                    for line in res.text.splitlines():
-                        if " - " not in line:
-                            continue
-                        key, val = [x.strip() for x in line.split(" - ", 1)]
-                        if key == "Banner":
-                            parts = val.split("/", 2)
-                            if len(parts) >= 3:
-                                user, repo, paths_str = parts[0], parts[1], parts[2]
-                                paths = [p.strip() for p in paths_str.split(",")]
-                                banner_dir = os.path.join(ReLoad.get().root, "banners")
-                                os.makedirs(banner_dir, exist_ok=True)
-                                for idx, b_path in enumerate(paths):
-                                    clean_path = b_path
-                                    if clean_path.startswith(f"{user}/{repo}/"):
-                                        clean_path = clean_path[len(f"{user}/{repo}/"):]
-                                    b_url = f"https://raw.githubusercontent.com/{user}/{repo}/main/{clean_path}"
-                                    local_path = os.path.join(banner_dir, f"banner_{idx}.png")
-                                    remote_tag = SafeDownloader.get_remote_etag_or_length(b_url)
-                                    local_tag = None
-                                    if os.path.exists(local_path):
-                                        local_tag = str(os.path.getsize(local_path))
-                                    if remote_tag and remote_tag != local_tag:
-                                        banner_update_needed = True
-                                        break
-                            break
-            except:
-                pass
-            if banner_update_needed:
-                updates.append("баннеры")
-
-            if not updates:
-                run_on_ui_thread(lambda: BulletinHelper.show_success("✅ У вас актуальная версия всех компонентов!"))
-                return
-
-            run_on_ui_thread(lambda: BulletinHelper.show_info(f"🔄 Обновляю: {', '.join(updates)} :3"))
-
-            # Запускаем обновления
-            if "ReMeow" in updates:
-                # Запускаем установщик
-                for line in requests.get(self.MANIFEST_URL, timeout=10).text.splitlines():
-                    if " - " in line and line.startswith("Lib installer"):
-                        installer_url = line.split(" - ", 1)[1].strip()
-                        if not installer_url.startswith("http"):
-                            parts = installer_url.split("/", 2)
-                            if len(parts) >= 3:
-                                user, repo, path = parts[0], parts[1], parts[2]
-                                installer_url = f"https://raw.githubusercontent.com/{user}/{repo}/main/{path}"
-                        self._download_and_run_installer(installer_url)
-                        break
-
-            if "MeowWG" in updates:
-                # Обновляем MeowWG через manifest
-                for line in requests.get(self.MANIFEST_URL, timeout=10).text.splitlines():
-                    if " - " in line and line.startswith("MeowWG"):
-                        val = line.split(" - ", 1)[1].strip()
-                        parts = val.split("/")
-                        if len(parts) >= 3:
-                            user, repo, path = parts[0], parts[1], "/".join(parts[2:])
-                            self._gh_start_download(user, repo, path, "ReMeow_Companion", enable_after=True)
-                        break
-
-            if "баннеры" in updates:
-                self._check_and_update_banners()
-
-        threading.Thread(target=check_task, daemon=True).start()
-
-    # ---- Остальные методы (create_settings, _others_sub_page, _get_doc_view, _modules_sub_page, _design_sub_page, _precache_stickers, download_from_github, _check_and_install_deps_ui, _wait_and_show_installer, _get_banner_view) ----
     def download_from_github(self, user, repo, path, folder_name, branch="main", callback=None):
         def _task(): success = self._gh_start_download(user, repo, path, folder_name, branch); (callback(success) if callback else None)
         run_on_queue(_task)
@@ -1804,23 +1966,21 @@ class ReMeowLib(BasePlugin):
         container.addView(iv, LayoutHelper.createFrame(-1, 160)); return container
 
     def create_settings(self):
-        v_text = __version__
-        if hasattr(self, 'latest_version_on_gh') and self.latest_version_on_gh and self.latest_version_on_gh != __version__:
-            v_text = f"{__version__} > {self.latest_version_on_gh} 🔥"
         return [
-            Custom(view=self._get_banner_view()),
-            Header(text=f"ReMeow Core v{v_text}"),
-            Text(text="Дизайн", icon="msg_palette", create_sub_fragment=self._design_sub_page),
-            Text(text="Модули", icon="msg_settings", create_sub_fragment=self._modules_sub_page),
-            Header(text="Companion (MeowWG)"),
-            Text(text="Обновить", icon="msg_download", on_click=self.update_all_components),
-            Header(text="Дополнительно"),
-            Text(text="Управление процессом & API", icon="msg_help", create_sub_fragment=self._others_sub_page),
+            Custom(view=self._get_banner_view()), 
+            Header(text=f"ReMeow Core v{__version__}"), 
+            Text(text="Дизайн", icon="msg_palette", create_sub_fragment=self._design_sub_page), 
+            Text(text="Модули", icon="msg_settings", create_sub_fragment=self._modules_sub_page), 
+            Header(text="Синхронизация"),
+            Text(text="Проверить обновления", icon="msg_download", on_click=lambda v: threading.Thread(target=self._perform_initial_check, args=(False,), daemon=True).start()),
+            Header(text="Дополнительно"), 
+            Text(text="Управление процессом & API", icon="msg_help", create_sub_fragment=self._others_sub_page), 
             Divider()
         ]
 
     def _others_sub_page(self):
         kill = lambda v: (jclass("org.telegram.ui.LaunchActivity").instance.finishAffinity() if jclass("org.telegram.ui.LaunchActivity").instance else None, jclass("java.lang.System").exit(0))
+        
         def start_gh_dl(v):
             full_path = self.get_setting("api_gh_full_path", "")
             folder = self.get_setting("api_gh_folder", "ReMeow_Downloads")
@@ -1832,85 +1992,77 @@ class ReMeowLib(BasePlugin):
             else: b, p = parts[2], parts[3]
             BulletinHelper.show_info("Загрузка...")
             self.download_from_github(u, r, p, folder, b)
-        doc_snippet = """# Пример использования ReMeow API
-from ReMeow import ReMeowCore
-# 1. Скачивание файла
+
+        doc_snippet = """# ReMeow API Example
+remow = sys.modules.get('ReMeow')
+
+# 1. Загрузка файла
 def callback(success):
-    print("Успех!" if success else "Ошибка")
+    print("Downloaded!" if success else "Error")
 
-remow = sys.modules['ReMeow']
-remow.download_from_github("User", "Repo", "path/to/file.py", "MyFolder")
-
-# 2. Отображение картинки из GitHub в настройках
-# В create_settings вашего плагина:
-def get_gh_image():
-    # Нужна логика SafeDownloader для кеширования
-    return Custom(view=my_image_view)
+remow.download_from_github("User", "Repo", "path/file.plugin", "MyFolder")
 """
-        def copy_code(v):
-            try:
-                ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
-                cm = ctx.getSystemService(jclass("android.content.Context").CLIPBOARD_SERVICE)
-                cd = jclass("android.content.ClipData").newPlainText("ReMeow Code", doc_snippet)
-                cm.setPrimaryClip(cd)
-                BulletinHelper.show_success("Код скопирован!")
-            except: pass
+
         return [
             Header(text="Система"), 
-            Text(text="Убить процесс", icon="msg_ST_proxies", red=True, on_click=kill),
+            Text(text="Убить процесс", icon="msg_settings", red=True, on_click=kill),
+            
             Header(text="GitHub API Loader"),
             Input(key="api_gh_full_path", text="Путь (User/Repo/Branch/File)", default=""),
             Input(key="api_gh_folder", text="Папка назначения", default="ReMeow_Downloads"),
             Text(text="Начать загрузку", icon="msg_download", on_click=start_gh_dl),
+            
             Header(text="Справка разработчика"),
-            Custom(view=self._get_doc_view(doc_snippet, copy_code))
+            Custom(view=self._get_doc_view(doc_snippet))
         ]
 
-    def _get_doc_view(self, text, copy_cb):
+    def _get_doc_view(self, text):
         ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
         AU, LH = AndroidUtilities, LayoutHelper
         root = LinearLayout(ctx); root.setOrientation(1); root.setPadding(AU.dp(16), AU.dp(8), AU.dp(16), AU.dp(8))
+        
         badge = LinearLayout(ctx); badge.setOrientation(0); badge.setGravity(17)
         badge.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AU.dp(12), ColorUtils.blendARGB(Theme.getColor(Theme.key_windowBackgroundWhite), Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader), 0.1), ColorUtils.blendARGB(Theme.getColor(Theme.key_windowBackgroundWhite), Theme.getColor(Theme.key_windowBackgroundWhiteBlackText), 0.1)))
         badge.setPadding(AU.dp(12), AU.dp(8), AU.dp(12), AU.dp(8))
+        
         t = jclass("android.widget.TextView")(ctx); t.setText("КАК ИСПОЛЬЗОВАТЬ API"); t.setTypeface(AU.bold()); t.setTextSize(1, 12.0); t.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader))
         badge.addView(t); arrow = jclass("android.widget.ImageView")(ctx); arrow.setImageResource(jclass("org.telegram.messenger.R").drawable.msg_expand); arrow.setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader), jclass("android.graphics.PorterDuff$Mode").SRC_IN)); arrow.setScaleX(1.2); arrow.setScaleY(1.2)
         badge.addView(arrow, LH.createLinear(12, 12, 16, 6, 0, 0, 0)); root.addView(badge, LH.createLinear(-2, -2, 1, 0, 4, 0, 4))
+        
         wrapper = LinearLayout(ctx); wrapper.setOrientation(1); wrapper.setVisibility(8); wrapper.setPadding(0, AU.dp(10), 0, AU.dp(10))
         content = jclass("android.widget.TextView")(ctx); content.setText(text); content.setTextSize(1, 13.0); content.setTypeface(jclass("android.graphics.Typeface").MONOSPACE); content.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
-        content.setBackground(Theme.createRoundRectDrawable(AU.dp(8), Theme.getColor(Theme.key_windowBackgroundGray)))
-        content.setPadding(AU.dp(12), AU.dp(12), AU.dp(12), AU.dp(12))
-        wrapper.addView(content, LH.createLinear(-1, -2))
-        btn = jclass("android.widget.TextView")(ctx); btn.setText("КОПИРОВАТЬ КОД"); btn.setGravity(17); btn.setTypeface(AU.bold()); btn.setTextSize(1, 12.0); btn.setTextColor(Theme.getColor(Theme.key_featuredStickers_buttonText)); btn.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AU.dp(8), Theme.getColor(Theme.key_featuredStickers_addButton), Color.TRANSPARENT)); btn.setPadding(0, AU.dp(10), 0, AU.dp(10))
-        btn.setOnClickListener(OnClickProxy(lambda v: copy_cb(v)))
-        wrapper.addView(btn, LH.createLinear(-1, -2, 0, 0, 8, 0, 0))
-        root.addView(wrapper, LH.createLinear(-1, -2))
-        state = {"expanded": False, "h": 0}
+        content.setBackground(Theme.createRoundRectDrawable(AU.dp(8), Theme.getColor(Theme.key_windowBackgroundGray))); content.setPadding(AU.dp(12), AU.dp(12), AU.dp(12), AU.dp(12))
+        
+        def on_copy_long(v):
+            AndroidUtilities.addToClipboard(text)
+            BulletinHelper.show_success("API Код скопирован!")
+            return True
+        content.setOnLongClickListener(OnLongClickProxy(on_copy_long))
+        
+        wrapper.addView(content, LH.createLinear(-1, -2)); root.addView(wrapper, LH.createLinear(-1, -2))
+        
         def doc_toggle(v):
-            state["expanded"] = not state["expanded"]
-            if state["h"] == 0:
-                wrapper.setVisibility(0); wrapper.measure(jclass("android.view.View$MeasureSpec").makeMeasureSpec(AU.displaySize.x, 1073741824), 0); state["h"] = wrapper.getMeasuredHeight()
-            anim = ValueAnimator.ofFloat(jarray(jfloat)([1.0 if state["expanded"] else 0.0]))
-            anim.setDuration(300); anim.setInterpolator(jclass("org.telegram.ui.Components.CubicBezierInterpolator").EASE_OUT_QUINT)
-            def _upd(a):
-                p = float(a.getAnimatedValue()); lp = wrapper.getLayoutParams(); lp.height = int(state["h"] * p); wrapper.setLayoutParams(lp); arrow.setRotation(180 * p); wrapper.setAlpha(p)
-            anim.addUpdateListener(dynamic_proxy(jclass("android.animation.ValueAnimator$AnimatorUpdateListener")))(_upd)
-            anim.addListener(ExpandAnimListener(wrapper)); anim.start()
+            isVisible = wrapper.getVisibility() == 0
+            wrapper.setVisibility(8 if isVisible else 0); arrow.setRotation(0 if isVisible else 180)
         badge.setOnClickListener(OnClickProxy(doc_toggle)); return root
 
     def _modules_sub_page(self):
         def clear(v):
             try:
                 root = ReLoad.get().root; (shutil.rmtree(root) if os.path.exists(root) else None); os.makedirs(root); loader = ReLoad.get(); loader.choices, loader._storage, loader.loaded_modules = {}, {}, ModuleGatekeeper(loader); _CFFI_READY.clear()
-                for k in [k for k in sys.modules if any(x in k for x in ['cffi', 'pycparser', 'pip', 'setuptools', 'wheel']) or k == '_cffi_backend']: del sys.modules[k]
                 BulletinHelper.show_success("Очищено! Перезапустите приложение.")
             except Exception as e: BulletinHelper.show_error(str(e))
-        return [Text(text="Очистить все данные ReMeow", icon="msg_delete", red=True, on_click=clear)]
+        
+        return [
+            Header(text="Управление ядром"),
+            Text(text="Очистить все данные ReMeow", icon="msg_delete", red=True, on_click=clear)
+        ]
 
     def _design_sub_page(self):
         v_box, e_box, sync = [None], [None], threading.Event()
         def build():
             try:
+                if not UniversalFragment: return BulletinHelper.show_error("Design Studio недоступен")
                 frag = get_last_fragment(); ctx = frag.getParentActivity()
                 if ctx: v_box[0] = DesignStudioController(ctx, self, frag).get_view()
             except Exception as e: e_box[0] = str(e)
@@ -1924,3 +2076,6 @@ def get_gh_image():
             req = TLRPC.TL_messages_getStickerSet(); req.stickerset = TLRPC.TL_inputStickerSetShortName(); req.stickerset.short_name = "UtyaDuck"; req.hash = 0 
             CM.getInstance(UC.selectedAccount).sendRequest(req, None)
         except: pass
+
+    def on_send_message_hook(self, account, params):
+        return HookResult()
