@@ -1,14 +1,3 @@
-Это полный код файла со всеми исправлениями. Я сохранил структуру оригинала
-«один в один», включая все UI-компоненты (Design Studio, анимации, хуки),
-но при этом:
-
-1.  Исправил безопасность: заменил eval() на ast.literal_eval().
-2.  Починил баннеры: теперь они скачиваются списком из plugin.txt и плавно
-    меняются.
-3.  Добавил контроль потоков: плагин теперь корректно останавливает ротацию при
-    выгрузке.
-4.  Увеличил стабильность: исправлены ошибки в логике _apply_banner_with_fade.
-
 import os, sys, time, json, ctypes, requests, re, threading, shutil, zipfile, importlib, random, socket
 import traceback, ast
 from typing import Dict, Optional, Any, List
