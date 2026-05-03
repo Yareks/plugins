@@ -22,7 +22,7 @@ from org.telegram.messenger import AndroidUtilities
 
 __id__ = "ReMeow"
 __name__ = "ReMeow Lib" 
-__version__ = "1.8.9"
+__version__ = "1.0"
 __author__ = "@playerqwe"
 __description__ = "Библиотека ReMeow (Core)"
 __icon__ = "Plugin2/1"
@@ -1734,7 +1734,8 @@ class ReMeowLib(BasePlugin):
         self.banner_list = []
         self.last_banner_path = ""
         self.available_updates_cache = []
-        
+        self._refresh_banner_list()
+        threading.Thread(target=self._start_banner_rotation, daemon=True).start()
         self._check_and_install_deps_ui()
         self.add_on_send_message_hook()
         
@@ -1913,28 +1914,77 @@ class ReMeowLib(BasePlugin):
         return success
 
     def _start_banner_rotation(self):
+    """Запускает циклическую смену баннеров (каждые 11 секунд)."""
+    # Первоначальное сканирование баннеров
+    self._refresh_banner_list()
+    # Периодическое обновление списка (раз в 5 минут, на случай появления новых картинок)
+    def updater():
         while True:
-            time.sleep(25)
-            if not self.banner_list or len(self.banner_list) < 2: continue
-            choices = [p for p in self.banner_list if p != self.last_banner_path]
-            if not choices: choices = self.banner_list
-            new_banner = random.choice(choices)
-            self.last_banner_path = new_banner
-            self._apply_banner_with_fade(new_banner)
+            time.sleep(300)  # 5 минут
+            self._refresh_banner_list()
+    threading.Thread(target=updater, daemon=True).start()
+
+    while True:
+        time.sleep(11)  # <--- изменено с 25 на 11 секунд
+        if len(self.banner_list) < 2:
+            continue
+        # Выбираем следующий баннер, отличный от текущего
+        candidates = [p for p in self.banner_list if p != self.last_banner_path]
+        if not candidates:
+            candidates = self.banner_list
+        new_banner = random.choice(candidates)
+        self.last_banner_path = new_banner
+        self._apply_banner_with_fade(new_banner)
 
     def _apply_banner_with_fade(self, path):
-        if not hasattr(self, 'last_banner_iv') or not self.last_banner_iv: return
-        def _task():
-            try:
-                bmp = BitmapFactory.decodeFile(path)
-                if not bmp: return
-                iv = self.last_banner_iv
-                iv.animate().alpha(0.0).setDuration(600).withEndAction(ActionRunnable(lambda: (
-                    iv.setImageBitmap(bmp),
-                    iv.animate().alpha(1.0).setDuration(600).start()
-                ))).start()
-            except: pass
-        run_on_ui_thread(_task)
+    """Плавно заменяет баннер на указанный."""
+    if not hasattr(self, 'last_banner_iv') or self.last_banner_iv is None:
+        # Если ImageView ещё не создан (настройки не открывались) – просто запоминаем путь
+        self.last_banner_path = path
+        return
+
+    def _task():
+        try:
+            bmp = BitmapFactory.decodeFile(path)
+            if not bmp:
+                return
+            iv = self.last_banner_iv
+            # Плавное исчезновение, замена, появление
+            iv.animate().alpha(0.0).setDuration(600).withEndAction(ActionRunnable(lambda: (
+                iv.setImageBitmap(bmp),
+                iv.animate().alpha(1.0).setDuration(600).start()
+            ))).start()
+        except Exception as e:
+            mlog(f"Banner fade error: {e}")
+    run_on_ui_thread(_task)
+    def _refresh_banner_list(self):
+        """Сканирует папку ReMeow и собирает все PNG-файлы для ротации."""
+        try:
+            loader = ReLoad.get()
+            banner_dir = loader.root
+            if not os.path.exists(banner_dir):
+                return
+            # Ищем все .png файлы
+            banners = [os.path.join(banner_dir, f) for f in os.listdir(banner_dir)
+                       if f.lower().endswith('.png') and os.path.isfile(os.path.join(banner_dir, f))]
+            # Если нет ни одного баннера – пробуем скачать стандартный
+            if not banners:
+                default_path = os.path.join(banner_dir, "dwd_banner.png")
+                if not os.path.exists(default_path):
+                    # Попытка скачать дефолтный баннер
+                    SafeDownloader.download(self.BANNER_URL, default_path)
+                if os.path.exists(default_path):
+                    banners.append(default_path)
+            self.banner_list = banners
+            mlog(f"Banner list refreshed: {len(banners)} banners found")
+            # Если текущий последний баннер отсутствует в новом списке – сбросить
+            if self.last_banner_path and self.last_banner_path not in self.banner_list:
+                self.last_banner_path = None
+            # Если ни одного баннера нет, устанавливаем флаг, чтобы ротация не пыталась работать
+            if not self.banner_list:
+                self.banner_list = [""]  # минимальный фиктивный список, но ротация не сработает из-за len<2
+        except Exception as e:
+            mlog(f"Refresh banner list error: {e}")
 
     def download_from_github(self, user, repo, path, folder_name, branch="main", callback=None):
         def _task(): success = self._gh_start_download(user, repo, path, folder_name, branch); (callback(success) if callback else None)
@@ -1956,14 +2006,32 @@ class ReMeowLib(BasePlugin):
         (run_on_ui_thread(lambda: CoreInstallerSheet(act).show()) if act else threading.Timer(10.0, _CFFI_READY.set).start())
 
     def _get_banner_view(self):
-        ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext; loader = ReLoad.get()
-        path = self.last_banner_path or os.path.join(loader.root, "dwd_banner.png")
-        container = FrameLayout(ctx); iv = ImageView(ctx); iv.setScaleType(ImageView.ScaleType.CENTER_CROP); self.last_banner_iv = iv
-        if os.path.exists(path):
-            bmp = BitmapFactory.decodeFile(path)
-            (iv.setImageBitmap(bmp) if bmp else iv.setBackgroundColor(0xFF222222))
-        else: iv.setBackgroundColor(0xFF222222)
-        container.addView(iv, LayoutHelper.createFrame(-1, 160)); return container
+        ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
+        loader = ReLoad.get()
+        # Определяем, какой баннер показывать первым
+        if not hasattr(self, 'last_banner_path') or not self.last_banner_path:
+            self._refresh_banner_list()
+            if self.banner_list and self.banner_list[0] and os.path.exists(self.banner_list[0]):
+                self.last_banner_path = self.banner_list[0]
+            else:
+                self.last_banner_path = os.path.join(loader.root, "dwd_banner.png")
+                # Если файла нет – попробуем скачать
+                if not os.path.exists(self.last_banner_path):
+                    SafeDownloader.download(self.BANNER_URL, self.last_banner_path)
+        container = FrameLayout(ctx)
+        iv = ImageView(ctx)
+        iv.setScaleType(ImageView.ScaleType.CENTER_CROP)
+        self.last_banner_iv = iv   # <-- сохраняем ссылку
+        if os.path.exists(self.last_banner_path):
+            bmp = BitmapFactory.decodeFile(self.last_banner_path)
+            if bmp:
+                iv.setImageBitmap(bmp)
+            else:
+                iv.setBackgroundColor(0xFF222222)
+        else:
+            iv.setBackgroundColor(0xFF222222)
+        container.addView(iv, LayoutHelper.createFrame(-1, 160))
+    return container
 
     def create_settings(self):
         return [
