@@ -38,7 +38,8 @@ def mlog(msg):
 def java_add(list_obj, item):
     if not item: return
     try:
-        list_obj.add(item)
+        Collections = jclass("java.util.Collections")
+        list_obj.addAll(Collections.singletonList(item))
     except Exception as e:
         mlog(f"Java List Add Error: {e}")
 
