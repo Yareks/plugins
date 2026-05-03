@@ -6,7 +6,7 @@ from java.lang import Integer, Float, CharSequence, Runnable, Boolean
 from android.os import Build, Environment
 from android.graphics import Canvas, Paint, RectF, Color, Bitmap, BitmapShader, Shader, Matrix, BitmapFactory
 from android.view import View, MotionEvent, ViewGroup, Gravity
-from android.widget import ScrollView, FrameLayout, SeekBar, GridLayout, LinearLayout, ImageView, TextView
+from android.widget import ScrollView, FrameLayout, SeekBar, GridLayout, LinearLayout, ImageView
 from android.animation import ValueAnimator, AnimatorListenerAdapter
 from android.text import TextWatcher
 from androidx.core.graphics import ColorUtils
@@ -22,9 +22,9 @@ from org.telegram.messenger import AndroidUtilities
 
 __id__ = "ReMeow"
 __name__ = "ReMeow Lib" 
-__version__ = "1.3.0"
-__author__ = "@playerqwe"
-__description__ = "Центральное ядро ReMeow (Core + API Hub)"
+__version__ = "1.1"
+__author__ = "@AiModuleBot"
+__description__ = "Библиотека ReMeow (Core) + Module API"
 __icon__ = "Plugin2/1"
 __min_version__ = "11.0.0"
 
@@ -32,20 +32,15 @@ _CFFI_READY = threading.Event()
 _CFFI_REINSTALL_LOCK = threading.Lock()
 _UPDATE_SHOWN_THIS_SESSION = False
 
-def safe_jclass(path):
-    try:
-        return jclass(path)
-    except:
-        return None
-
-UniversalFragment = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalFragment")
-UniversalFragmentDelegate = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalFragment$UniversalFragmentDelegate")
-CircularProgressIndicator = safe_jclass("com.google.android.material.progressindicator.CircularProgressIndicator")
-UniversalView = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalView")
-UniversalViewDelegate = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalView$UniversalViewDelegate")
-
 def mlog(msg):
     log(f"[ReMeow] {msg}")
+
+def java_add(list_obj, item):
+    if not item: return
+    try:
+        list_obj.add(item)
+    except Exception as e:
+        mlog(f"Java List Add Error: {e}")
 
 def is_safe_mode() -> bool:
     try:
@@ -54,22 +49,11 @@ def is_safe_mode() -> bool:
     except:
         return False
 
-class ActionRunnable(dynamic_proxy(Runnable)):
-    def __init__(self, action):
-        super().__init__()
-        self.action = action
-    def run(self):
-        try:
-            self.action()
-        except Exception as e:
-            mlog(f"ActionRunnable Error: {e}")
-
-class DialogClickProxy(dynamic_proxy(jclass("android.content.DialogInterface$OnClickListener"))):
-    def __init__(self, cb):
-        super().__init__()
-        self.cb = cb
-    def onClick(self, dialog, which):
-        if self.cb: self.cb()
+def safe_jclass(path):
+    try:
+        return jclass(path)
+    except:
+        return None
 
 class SafeDownloader:
     @staticmethod
@@ -94,7 +78,7 @@ class SafeDownloader:
                             if progress_cb and total_size > 0:
                                 progress_cb(downloaded, total_size)
                 
-                if downloaded < 100:
+                if downloaded < 100: 
                      raise ValueError("File is too small or empty")
 
             if os.path.exists(dest_path): os.remove(dest_path)
@@ -359,6 +343,7 @@ class ReLoad:
         if not os.path.exists(self.root): os.makedirs(self.root)
         
         self._storage = {}
+        self.registered_modules = {} # id -> { instance, name, ver, status, ui_cb }
         self.loaded_modules = ModuleGatekeeper(self)
         
         p = os.path.join(self.root, "user_choices.json")
@@ -432,61 +417,147 @@ class CryingSheet:
     def show(self):
         if self.sheet: self.sheet.show()
 
-class ReMeowAPI:
-    """Общедоступный API Хаб для взаимодействия плагинов"""
-    def __init__(self, core):
-        self._core = core
-        self._shared_data = {}
-        self._jokes = [
-            "Почему Python программисты не носят очки? Потому что они не могут найти C++.",
-            "Программист лег спать и поставил два стакана: один с водой (на случай если захочет пить), а другой пустой (на случай если не захочет).",
-            "Заходит бесконечное число программистов в бар. Первый заказывает кружку пива, второй — полкружки, третий — четверть... Бармен: 'Вот вам две кружки, ребята, знайте свои пределы'."
-        ]
+class UpdateNotificationSheet:
+    def __init__(self, context, available_updates, on_update_all):
+        self.context = context
+        self.updates = sorted(available_updates, key=lambda x: 0 if x['id'] == 'remeow' else 1) 
+        self.on_update_all = on_update_all
+        self.sheet = None
+        
+        try:
+            BottomSheet = jclass("org.telegram.ui.ActionBar.BottomSheet")
+            self.sheet = BottomSheet(context, False)
+            self.sheet.fixNavigationBar()
+            
+            AU = jclass("org.telegram.messenger.AndroidUtilities")
+            LH = jclass("org.telegram.ui.Components.LayoutHelper")
+            TV = jclass("android.widget.TextView")
+            LL = jclass("android.widget.LinearLayout")
+            IV = jclass("android.widget.ImageView")
+            Theme = jclass("org.telegram.ui.ActionBar.Theme")
+            SIV = jclass("org.telegram.ui.Components.StickerImageView")
+            SV = jclass("android.widget.ScrollView")
+            R_tg = jclass("org.telegram.messenger.R")
+            
+            self.root = LL(context)
+            self.root.setOrientation(1)
+            self.root.setPadding(0, AU.dp(20), 0, AU.dp(20))
+            
+            self.title = TV(context)
+            self.title.setText("Найдено обновление:")
+            self.title.setTextSize(1, 20.0)
+            self.title.setTypeface(AU.bold())
+            self.title.setGravity(1)
+            self.title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+            self.root.addView(self.title, LH.createLinear(-1, -2, 1, 40, 0, 40, 15))
 
-    def set_data(self, key: str, value: Any):
-        """Сохранить данные в глобальный кэш"""
-        self._shared_data[key] = value
+            scroll = SV(context)
+            scroll.setFillViewport(True)
+            
+            list_cont = LL(context)
+            list_cont.setOrientation(1)
+            list_cont.setPadding(AU.dp(24), 0, AU.dp(24), 0)
+            
+            PI = safe_jclass("com.exteragram.messenger.plugins.ui.PluginIcons")
+            
+            for upd in self.updates:
+                row = LL(context)
+                row.setOrientation(0)
+                row.setGravity(16)
+                row.setPadding(0, AU.dp(8), 0, AU.dp(8))
+                
+                icon_iv = IV(context)
+                icon_applied = False
+                if PI:
+                    try:
+                        drawable = PI.getDrawable(upd['icon_str'], AU.dp(32), Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon))
+                        if drawable:
+                            icon_iv.setImageDrawable(drawable)
+                            icon_applied = True
+                    except: pass
+                
+                if not icon_applied:
+                    icon_iv.setImageResource(R_tg.drawable.msg_bot)
+                    icon_iv.setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon), jclass("android.graphics.PorterDuff$Mode").SRC_IN))
+                
+                row.addView(icon_iv, LH.createLinear(32, 32, 0, 0, 0, 12, 0))
+                
+                text_l = LL(context)
+                text_l.setOrientation(1)
+                
+                name_t = TV(context)
+                name_t.setText(upd['name'])
+                name_t.setTextSize(1, 16.0)
+                name_t.setTypeface(AU.bold())
+                name_t.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+                text_l.addView(name_t)
+                
+                ver_t = TV(context)
+                ver_t.setText(f"{upd['old']} > {upd['new']}")
+                ver_t.setTextSize(1, 13.0)
+                ver_t.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader))
+                text_l.addView(ver_t)
+                
+                row.addView(text_l, LH.createLinear(0, -2, 1.0))
+                list_cont.addView(row)
+            
+            scroll.addView(list_cont)
+            self.root.addView(scroll, LH.createLinear(-1, 0, 1.0, 0, 5, 0, 15))
 
-    def get_data(self, key: str, default: Any = None) -> Any:
-        """Получить данные из глобального кэша"""
-        return self._shared_data.get(key, default)
+            try:
+                self.sticker = SIV(context, 0)
+                self.sticker.setStickerPackName("UtyaDuck")
+                self.sticker.setStickerNum(1) 
+                self.sticker.getImageReceiver().setAutoRepeat(1)
+                self.root.addView(self.sticker, LH.createLinear(110, 110, 1, 0, 0, 0, 15))
+            except: pass
+            
+            btns = LL(context)
+            btns.setOrientation(0)
+            btns.setPadding(AU.dp(20), 0, AU.dp(20), 0)
+            
+            skip = TV(context)
+            skip.setText("позже 😭")
+            skip.setGravity(17)
+            skip.setTextSize(1, 14.0)
+            skip.setTypeface(AU.bold())
+            skip.setTextColor(Theme.getColor(Theme.key_text_RedBold))
+            skip.setBackground(Theme.getSelectorDrawable(False))
+            skip.setPadding(AU.dp(12), AU.dp(10), AU.dp(12), AU.dp(10))
+            skip.setOnClickListener(OnClickProxy(lambda v: self._handle_skip()))
+            btns.addView(skip, LH.createLinear(0, -2, 1.0, 0, 0, 8, 0))
+            
+            upd_btn = TV(context)
+            upd_btn.setText("обновить ❤️")
+            upd_btn.setGravity(17)
+            upd_btn.setTextSize(1, 14.0)
+            upd_btn.setTypeface(AU.bold())
+            upd_btn.setTextColor(Theme.getColor(Theme.key_featuredStickers_buttonText))
+            upd_btn.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AU.dp(8), Theme.getColor(Theme.key_featuredStickers_addButton), 0))
+            upd_btn.setPadding(AU.dp(12), AU.dp(10), AU.dp(12), AU.dp(10))
+            upd_btn.setOnClickListener(OnClickProxy(lambda v: self._handle_update()))
+            btns.addView(upd_btn, LH.createLinear(0, -2, 1.2))
+            
+            self.root.addView(btns, LH.createLinear(-1, -2))
+            
+            self.sheet.setCustomView(self.root)
+            self.sheet.setCanDismissWithSwipe(False)
+            self.sheet.setCancelable(False)
+            self.sheet.setCanceledOnTouchOutside(False)
+        except Exception as e:
+            mlog(f"Failed to create UpdateSheet: {e}")
 
-    def get_joke(self) -> str:
-        """Получить случайную шутку от ReMeow"""
-        return random.choice(self._jokes)
+    def _handle_skip(self):
+        global _UPDATE_SHOWN_THIS_SESSION
+        _UPDATE_SHOWN_THIS_SESSION = True
+        if self.sheet: self.sheet.dismiss()
 
-    def register(self, pid: str, name: str, version: str, status: str = "Активен", info: str = "", params: dict = None, actions: dict = None):
-        """Регистрация модуля в настройках ядра (Хаб)"""
-        self._core.register_module(pid, name, version, status, info, params, actions)
+    def _handle_update(self):
+        if self.sheet: self.sheet.dismiss()
+        self.on_update_all()
 
-    def update(self, pid: str, **kwargs):
-        """Обновление динамических данных (статус, инфо и т.д.)"""
-        self._core.update_module_data(pid, **kwargs)
-
-    def get_banner_view(self, context) -> View:
-        """Получить View с текущим загруженным баннером ReMeow"""
-        return self._core.get_banner_view(context)
-
-    def install_pip_package(self, package_name: str, url: str) -> bool:
-        """Прямая установка пакета PIP через Wheel URL"""
-        return RePip.install_wheel_direct(url, package_name)
-
-    def download_github(self, path: str, folder="Downloads", enable_after=False):
-        """Скачать плагин или файл напрямую с GitHub (Формат: User/Repo/Branch/File)"""
-        parts = path.split("/", 3)
-        if len(parts) >= 3:
-            u, r = parts[0], parts[1]
-            b = parts[2] if len(parts) == 4 else "main"
-            f = parts[-1]
-            self._core._gh_start_download(u, r, f, folder, b, enable_after)
-
-    def broadcast_status(self, plugin_id: str, status: str):
-        """Обновить статус (Deprecated, use update)"""
-        self.update(plugin_id, status=status)
-
-    def get_module_meta(self, plugin_id: str) -> Optional[dict]:
-        """Получить метаданные подключенного модуля"""
-        return self._core.connected_modules.get(plugin_id)
+    def show(self):
+        if self.sheet: self.sheet.show()
 
 class ReMeowCore:
     @staticmethod
@@ -507,6 +578,26 @@ class ReMeowCore:
             ).start()
         else:
             ReMeowCore._finish_initialization(plugin_instance)
+
+    @staticmethod
+    def register_module(plugin_instance, name: str, version: str, status: str = "Инициализация...", ui_provider=None):
+        pid = getattr(plugin_instance, "__id__", "unknown")
+        loader = ReLoad.get()
+        loader.registered_modules[pid] = {
+            "instance": plugin_instance,
+            "name": name,
+            "ver": version,
+            "status": status,
+            "ui_cb": ui_provider
+        }
+        mlog(f"Module '{name}' (v{version}) registered successfully.")
+
+    @staticmethod
+    def update_module_status(plugin_instance, status: str):
+        pid = getattr(plugin_instance, "__id__", "unknown")
+        loader = ReLoad.get()
+        if pid in loader.registered_modules:
+            loader.registered_modules[pid]["status"] = status
 
     @staticmethod
     def _progressive_wait(plugin_instance, pid):
@@ -550,6 +641,7 @@ class ReMeowCore:
                 try:
                     act = jclass("org.telegram.ui.LaunchActivity").instance
                     if not act:
+                        from client_utils import get_last_fragment
                         frag = get_last_fragment()
                         if frag: act = frag.getParentActivity()
                     if act: CryingSheet(act, pid).show()
@@ -574,20 +666,6 @@ class ReMeowCore:
             importlib.invalidate_caches()
             
         RePip.fix_cffi_backend()
-
-        if ReMeowLib._instance:
-            try:
-                pid = getattr(plugin_instance, "__id__", "unknown")
-                if pid not in ReMeowLib._instance.connected_modules:
-                    name = getattr(plugin_instance, "__name__", pid)
-                    ver = getattr(plugin_instance, "__version__", "1.0")
-                    desc = getattr(plugin_instance, "__description__", "")
-                    ReMeowLib._instance.register_module(
-                        pid, name, ver, 
-                        status="Инициализирован", 
-                        info=desc
-                    )
-            except: pass
 
         reqs = getattr(plugin_instance, "__ReqRements__", {})
         if not reqs:
@@ -637,6 +715,7 @@ class ReMeowCore:
                 try:
                     act = jclass("org.telegram.ui.LaunchActivity").instance
                     if not act:
+                        from client_utils import get_last_fragment
                         frag = get_last_fragment()
                         if frag: act = frag.getParentActivity()
                     if act:
@@ -734,7 +813,7 @@ class DependencyProgressSheet:
             self.sheet.show()
             threading.Thread(target=self._worker, daemon=True).start()
         else:
-            run_on_ui_thread(lambda: BulletinHelper.show_info("Скачивание модулей (в фоне)..."))
+            BulletinHelper.show_info("Скачивание модулей (в фоне)...")
             threading.Thread(target=self._worker, daemon=True).start()
 
     def _worker(self):
@@ -853,7 +932,7 @@ class CoreInstallerSheet:
             self.sheet.show()
             threading.Thread(target=self._worker, daemon=True).start()
         else:
-            run_on_ui_thread(lambda: BulletinHelper.show_info("Установка ReMeow (в фоне)..."))
+            BulletinHelper.show_info("Установка ReMeow (в фоне)...")
             threading.Thread(target=self._worker, daemon=True).start()
 
     def _update_status(self, progress, text, is_error=False):
@@ -925,7 +1004,7 @@ class CoreInstallerSheet:
 
         if self.has_error:
             self._update_status(1.0, "Сбой при настройке!", True)
-            run_on_ui_thread(lambda: BulletinHelper.show_error("Ошибка настройки ядра. Попробуйте еще раз."))
+            BulletinHelper.show_error("Ошибка настройки ядра. Попробуйте еще раз.")
             time.sleep(2)
         else:
             self._update_status(1.0, "Готово!")
@@ -940,19 +1019,11 @@ class CoreInstallerSheet:
         if not self.has_error and self.on_finish: 
             self.on_finish()
 
-class OnClickProxy(dynamic_proxy(jclass("android.view.View$OnClickListener"))):
-    def __init__(self, cb): super().__init__(); self.cb = cb
-    def onClick(self, v): self.cb(v)
-
-class OnLongClickProxy(dynamic_proxy(jclass("android.view.View$OnLongClickListener"))):
-    def __init__(self, cb): super().__init__(); self.cb = cb
-    def onLongClick(self, v): return self.cb(v)
-
 class ExpandAnimListener(dynamic_proxy(jclass("android.animation.Animator$AnimatorListener"))):
     def __init__(self, wrapper):
         super().__init__()
-        self.wrapper = wrapper
         self.canceled = False
+        self.wrapper = wrapper
         
     def onAnimationStart(self, *args):
         self.canceled = False
@@ -997,372 +1068,13 @@ class ExpandAnimUpdate(dynamic_proxy(jclass("android.animation.ValueAnimator$Ani
 
         self.arrow.setRotation(180.0 * p)
 
-class DesignStudioController:
-    def __init__(self, context, plugin, base_fragment):
-        self.plugin, self.base_fragment, self.context = plugin, base_fragment, context
-        self.current_target, self.ui_elements = None, {}
-        self.root_view = LinearLayout(self.context); self.root_view.setOrientation(LinearLayout.VERTICAL); self.root_view.setBackgroundColor(jint(Theme.getColor(Theme.key_windowBackgroundWhite)))
-        try: 
-            self._build_ui()
-            self._update_preview_from_settings(animate=False)
-        except Exception as e: self.plugin.log(f"DesignStudioController BUILD ERROR: {e}")
-    
-    def get_view(self): return self.root_view
-    
-    def _clear_selection(self):
-        if self.current_target is not None: 
-            self.overlay_delegate.setTarget(None, None, 0); 
-            self.current_target = None; 
-            self.settings_container.animate().alpha(0.0).translationY(float(AndroidUtilities.dp(20))).setDuration(150).start()
-    
-    def _build_ui(self):
-        self.preview_container = FrameLayout(self.context); self.preview_container.setBackgroundColor(jint(Theme.getColor(Theme.key_windowBackgroundGray)))
-        self.preview_container.setOnClickListener(OnClickProxy(lambda v: self._clear_selection())); list_root = LinearLayout(self.context); list_root.setOrientation(LinearLayout.VERTICAL); list_root.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(8), AndroidUtilities.dp(16), AndroidUtilities.dp(16))
-        badge_cont = LinearLayout(self.context); badge_cont.setOrientation(0); badge_cont.setGravity(1); badge = LinearLayout(self.context); badge.setOrientation(0); badge.setGravity(17)
-        accent, bg_color = jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader)), jint(Theme.getColor(Theme.key_windowBackgroundWhite)); badge_bg = ColorUtils.blendARGB(bg_color, accent, 0.12); pressed_color = ColorUtils.blendARGB(badge_bg, jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText)), 0.1)
-        badge.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(20), badge_bg, pressed_color)); badge.setPadding(AndroidUtilities.dp(14), AndroidUtilities.dp(6), AndroidUtilities.dp(14), AndroidUtilities.dp(6))
-        t = jclass("android.widget.TextView")(self.context); t.setText("Модули: 2"); t.setTypeface(AndroidUtilities.bold()); t.setTextSize(1, 13.0); t.setTextColor(accent); badge.addView(t)
-        arrow = jclass("android.widget.ImageView")(self.context); arrow.setImageResource(jclass("org.telegram.messenger.R").drawable.msg_expand); arrow.setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(accent, jclass("android.graphics.PorterDuff$Mode").SRC_IN)); arrow.setRotation(0.0); arrow.setScaleX(1.4); arrow.setScaleY(1.4)
-        badge.addView(arrow, LayoutHelper.createLinear(14, 14, 16, 5, 0, 0, 0)); badge_cont.addView(badge, LayoutHelper.createLinear(-2, -2)); list_root.addView(badge_cont, LayoutHelper.createLinear(-1, -2, 1, 0, 0, 0, 12))
-        anim_wrapper = LinearLayout(self.context); anim_wrapper.setOrientation(1); anim_wrapper.setClipChildren(True); anim_wrapper.setClipToPadding(False); anim_wrapper.setVisibility(8); self.mock_list = anim_wrapper
-        self.ui_elements['container'] = LinearLayout(self.context); self.ui_elements['container'].setOrientation(LinearLayout.VERTICAL)
-        self.ui_elements['row_req'] = LinearLayout(self.context); self.ui_elements['row_req'].setPadding(AndroidUtilities.dp(18), AndroidUtilities.dp(10), AndroidUtilities.dp(18), AndroidUtilities.dp(10)); self.ui_elements['row_req'].setGravity(16)
-        gray_icon_color = jint(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon)); self.ui_elements['icon_req'] = jclass("android.widget.ImageView")(self.context); self.ui_elements['icon_req'].setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(gray_icon_color, jclass("android.graphics.PorterDuff$Mode").SRC_IN)); self.ui_elements['row_req'].addView(self.ui_elements['icon_req'], LayoutHelper.createLinear(22, 22, 16, 0, 0, 14, 0))
-        self.ui_elements['tl1'] = LinearLayout(self.context); self.ui_elements['tl1'].setOrientation(LinearLayout.VERTICAL); self.ui_elements['tl1'].setGravity(16)
-        self.ui_elements['req_title'] = jclass("android.widget.TextView")(self.context); self.ui_elements['req_title'].setText("Название зависимости"); self.ui_elements['req_title'].setTextSize(1, 15.0); self.ui_elements['req_title'].setTypeface(AndroidUtilities.bold()); self.ui_elements['tl1'].addView(self.ui_elements['req_title'], LayoutHelper.createLinear(-1, -2))
-        self.ui_elements['req_sub'] = jclass("android.widget.TextView")(self.context); self.ui_elements['req_sub'].setTextSize(1, 12.0); self.ui_elements['tl1'].addView(self.ui_elements['req_sub'], LayoutHelper.createLinear(-1, -2)); self.ui_elements['row_req'].addView(self.ui_elements['tl1'], LayoutHelper.createLinear(0, -2, 1.0, 16, 0, 0, 8, 0))
-        self.ui_elements['req_cb'] = jclass("org.telegram.ui.Components.CheckBox2")(self.context, 21); self.ui_elements['req_cb'].setDrawBackgroundAsArc(10); self.ui_elements['req_cb'].setChecked(True, False); self.ui_elements['req_cb'].setEnabled(False)
-        self.ui_elements['req_cb_container'] = FrameLayout(self.context); self.ui_elements['req_cb_container'].addView(self.ui_elements['req_cb'], LayoutHelper.createFrame(-2, -2, 17)); self.ui_elements['row_req'].setAlpha(0.6); self.ui_elements['row_req'].addView(self.ui_elements['req_cb_container'])
-        self.ui_elements['row_opt'] = LinearLayout(self.context); self.ui_elements['row_opt'].setPadding(AndroidUtilities.dp(18), AndroidUtilities.dp(10), AndroidUtilities.dp(18), AndroidUtilities.dp(10)); self.ui_elements['row_opt'].setGravity(16)
-        self.ui_elements['icon_opt'] = jclass("android.widget.ImageView")(self.context); self.ui_elements['icon_opt'].setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(gray_icon_color, jclass("android.graphics.PorterDuff$Mode").SRC_IN)); self.ui_elements['row_opt'].addView(self.ui_elements['icon_opt'], LayoutHelper.createLinear(22, 22, 16, 0, 0, 14, 0))
-        self.ui_elements['tl2'] = LinearLayout(self.context); self.ui_elements['tl2'].setOrientation(LinearLayout.VERTICAL); self.ui_elements['tl2'].setGravity(16)
-        self.ui_elements['opt_title'] = jclass("android.widget.TextView")(self.context); self.ui_elements['opt_title'].setText("Название зависимости"); self.ui_elements['opt_title'].setTextSize(1, 15.0); self.ui_elements['opt_title'].setTypeface(AndroidUtilities.bold()); self.ui_elements['tl2'].addView(self.ui_elements['opt_title'], LayoutHelper.createLinear(-1, -2))
-        self.ui_elements['opt_sub'] = jclass("android.widget.TextView")(self.context); self.ui_elements['opt_sub'].setTextSize(1, 12.0); self.ui_elements['tl2'].addView(self.ui_elements['opt_sub'], LayoutHelper.createLinear(-1, -2)); self.ui_elements['row_opt'].addView(self.ui_elements['tl2'], LayoutHelper.createLinear(0, -2, 1.0, 16, 0, 0, 8, 0))
-        self.ui_elements['opt_cb'] = jclass("org.telegram.ui.Components.CheckBox2")(self.context, 21); self.ui_elements['opt_cb'].setDrawBackgroundAsArc(10); self.ui_elements['opt_cb'].setChecked(True, False); self.ui_elements['opt_cb_container'] = FrameLayout(self.context); self.ui_elements['opt_cb_container'].addView(self.ui_elements['opt_cb'], LayoutHelper.createFrame(-2, -2, 17)); self.ui_elements['row_opt'].addView(self.ui_elements['opt_cb_container']); self.ui_elements['container'].addView(self.ui_elements['row_req']); self.ui_elements['container'].addView(self.ui_elements['row_opt']); anim_wrapper.addView(self.ui_elements['container'], LayoutHelper.createLinear(-1, -2)); list_root.addView(anim_wrapper, LayoutHelper.createLinear(-1, -2)); self.preview_container.addView(list_root, LayoutHelper.createFrame(-1, -2, 17))
-        if UniversalView:
-            self.overlay_delegate = HighlightOverlayDelegate(); self.overlay_view = UniversalView(self.context, self.overlay_delegate); self.overlay_delegate.view = self.overlay_view; self.preview_container.addView(self.overlay_view, LayoutHelper.createFrame(-1, -1))
-        self.root_view.addView(self.preview_container, LayoutHelper.createLinear(-1, -2))
-        self._setup_click(self.ui_elements['container'], 'container', is_container=True); self._setup_click(self.ui_elements['icon_req'], 'icon'); self._setup_click(self.ui_elements['icon_opt'], 'icon'); self._setup_click(self.ui_elements['tl1'], 'req_text'); self._setup_click(self.ui_elements['tl2'], 'opt_text'); self._setup_click(self.ui_elements['req_cb_container'], 'req_checkbox'); self._setup_click(self.ui_elements['opt_cb_container'], 'opt_checkbox')
-        anim_state = {"full_height": 0, "current_anim": None, "progress": 0.0, "is_expanded": False}
-        def badge_toggle(v):
-            self._clear_selection(); target_expanded = not anim_state["is_expanded"]; anim_state["is_expanded"] = target_expanded
-            if anim_state["current_anim"]: anim_state["current_anim"].cancel()
-            if anim_state["full_height"] == 0:
-                anim_wrapper.setVisibility(0); parent_w = list_root.getWidth(); 
-                if parent_w == 0: parent_w = AndroidUtilities.displaySize.x
-                anim_wrapper.measure(jclass("android.view.View$MeasureSpec").makeMeasureSpec(parent_w, 1073741824), jclass("android.view.View$MeasureSpec").makeMeasureSpec(0, 0)); anim_state["full_height"] = anim_wrapper.getMeasuredHeight()
-                lp = self.ui_elements['container'].getLayoutParams(); lp.height = self.ui_elements['container'].getMeasuredHeight(); self.ui_elements['container'].setLayoutParams(lp)
-            start_val, end_val = anim_state["progress"], (1.0 if target_expanded else 0.0)
-            if start_val == end_val: return
-            anim = jclass("android.animation.ValueAnimator").ofFloat(jarray(jfloat)([start_val, end_val])); anim.setDuration(int(350 * (0.4 + 0.6 * abs(end_val - start_val)))); anim.setInterpolator(jclass("org.telegram.ui.Components.CubicBezierInterpolator").EASE_OUT_QUINT); anim.addUpdateListener(ExpandAnimUpdate(anim_wrapper, self.ui_elements['container'], arrow, anim_state["full_height"], anim_state)); anim.addListener(ExpandAnimListener(anim_wrapper)); anim_state["current_anim"] = anim; anim.start()
-        badge.setOnClickListener(OnClickProxy(badge_toggle)); divider = View(self.context); divider.setBackgroundColor(jint(Theme.getColor(Theme.key_divider))); self.root_view.addView(divider, LayoutHelper.createLinear(-1, 1)); self.settings_scroll = ScrollView(self.context); self.settings_scroll.setFillViewport(True); self.settings_scroll.setClipToPadding(False); self.settings_container = LinearLayout(self.context); self.settings_container.setOrientation(LinearLayout.VERTICAL); self.settings_container.setPadding(0, AndroidUtilities.dp(8), 0, AndroidUtilities.dp(16)); self.settings_scroll.addView(self.settings_container, LayoutHelper.createScroll(-1, -2, 0)); self.root_view.addView(self.settings_scroll, LayoutHelper.createLinear(-1, -1, 1.0)); self._clear_selection() 
+class OnClickProxy(dynamic_proxy(jclass("android.view.View$OnClickListener"))):
+    def __init__(self, cb): super().__init__(); self.cb = cb
+    def onClick(self, v): self.cb(v)
 
-    def _setup_click(self, view, type_str, is_container=False):
-        view.setOnClickListener(OnClickProxy(lambda v, t=type_str, is_cont=is_container: (rad := (self.plugin.get_setting("ds_cont_radius", 16) if is_cont else 6), self.overlay_delegate.setTarget(view, self.mock_list, rad) if self.overlay_delegate else None, self._open_settings_for(t))))
-
-    def _update_preview_from_settings(self, animate=True):
-        try:
-            if animate: 
-                TManager = jclass("android.transition.TransitionManager")
-                TManager.beginDelayedTransition(self.ui_elements['container'], jclass("android.transition.AutoTransition")().setDuration(250).setInterpolator(jclass("org.telegram.ui.Components.CubicBezierInterpolator").EASE_OUT_QUINT))
-            
-            has_cont = self.plugin.get_setting("ds_cont_enabled", True)
-            if has_cont:
-                color = jint(self.plugin.get_setting("ds_cont_color", Theme.getColor(Theme.key_windowBackgroundGray)))
-                rad = self.plugin.get_setting("ds_cont_radius", 16)
-                self.ui_elements['container'].setBackground(Theme.createRoundRectDrawable(AndroidUtilities.dp(rad), AndroidUtilities.dp(rad), color)); 
-                self.ui_elements['container'].setPadding(0, AndroidUtilities.dp(6), 0, AndroidUtilities.dp(6))
-            else: 
-                self.ui_elements['container'].setBackground(None)
-                self.ui_elements['container'].setPadding(0, 0, 0, 0)
-            
-            if self.current_target == 'container' and self.overlay_delegate: 
-                self.overlay_delegate.setTarget(self.ui_elements['container'], self.mock_list, (self.plugin.get_setting("ds_cont_radius", 16) if has_cont else 0))
-            
-            R_draw = jclass("org.telegram.messenger.R").drawable
-            res_id = getattr(R_draw, self.plugin.get_setting("ds_icon_res", "msg_bot"), R_draw.msg_bot)
-            self.ui_elements['icon_req'].setImageResource(res_id)
-            self.ui_elements['icon_opt'].setImageResource(res_id)
-            
-            self.ui_elements['req_title'].setTextColor(jint(self.plugin.get_setting("ds_req_title_color", Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))))
-            self.ui_elements['req_sub'].setText(self.plugin.get_setting("ds_req_sub_text", "Обязательно"))
-            self.ui_elements['req_sub'].setTextColor(jint(self.plugin.get_setting("ds_req_sub_color", Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))))
-            
-            self.ui_elements['opt_title'].setTextColor(jint(self.plugin.get_setting("ds_opt_title_color", Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))))
-            self.ui_elements['opt_sub'].setText(self.plugin.get_setting("ds_opt_sub_text", "Опционально"))
-            self.ui_elements['opt_sub'].setTextColor(jint(self.plugin.get_setting("ds_opt_sub_color", Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))))
-            
-            req_g = self.plugin.get_setting("ds_req_gravity", 3)
-            self.ui_elements['req_title'].setGravity(req_g); self.ui_elements['req_sub'].setGravity(req_g); self.ui_elements['tl1'].setGravity(req_g)
-            
-            opt_g = self.plugin.get_setting("ds_opt_gravity", 3)
-            self.ui_elements['opt_title'].setGravity(opt_g); self.ui_elements['opt_sub'].setGravity(opt_g); self.ui_elements['tl2'].setGravity(opt_g)
-            
-            req_cb_scale = float(self.plugin.get_setting("ds_req_cb_scale", 1.0))
-            req_cb_frame = int(self.plugin.get_setting("ds_req_cb_frame", 26))
-            self.ui_elements['req_cb'].setScaleX(req_cb_scale); self.ui_elements['req_cb'].setScaleY(req_cb_scale)
-            self.ui_elements['req_cb_container'].setLayoutParams(LayoutHelper.createLinear(req_cb_frame, req_cb_frame, 16))
-            
-            opt_cb_scale = float(self.plugin.get_setting("ds_opt_cb_scale", 1.0))
-            opt_cb_frame = int(self.plugin.get_setting("ds_opt_cb_frame", 26))
-            self.ui_elements['opt_cb'].setScaleX(opt_cb_scale); self.ui_elements['opt_cb'].setScaleY(opt_cb_scale)
-            self.ui_elements['opt_cb_container'].setLayoutParams(LayoutHelper.createLinear(opt_cb_frame, opt_cb_frame, 16))
-            
-            if self.current_target == 'req_checkbox' and self.overlay_delegate: self.overlay_delegate.setTarget(self.ui_elements['req_cb_container'], self.mock_list, 6)
-            elif self.current_target == 'opt_checkbox' and self.overlay_delegate: self.overlay_delegate.setTarget(self.ui_elements['opt_cb_container'], self.mock_list, 6)
-        except Exception as e: self.plugin.log(f"UPDATE PREVIEW ERROR: {e}")
-
-    def _open_settings_for(self, type_str):
-        if self.current_target == type_str: return
-        self.current_target = type_str; self.settings_container.animate().alpha(0.0).translationY(float(AndroidUtilities.dp(20))).setDuration(150).withEndAction(ActionRunnable(self._build_settings_panel)).start()
-
-    def _build_settings_panel(self):
-        try:
-            self.settings_container.removeAllViews()
-            if self.current_target == 'container': 
-                self._add_title("Настройки контейнера")
-                self._add_toggle_btn("ds_cont_enabled", True)
-                self._add_color_picker("Цвет контейнера", "ds_cont_color", Theme.getColor(Theme.key_windowBackgroundGray))
-                self._add_slider("Скругление (dp)", "ds_cont_radius", 0, 32, 16)
-            elif self.current_target == 'icon': 
-                self._add_title("Иконка зависимости")
-                self._add_icon_selector_btn()
-            elif self.current_target == 'req_text': 
-                self._add_title("Обязательный модуль")
-                self._add_color_picker("Цвет заголовка", "ds_req_title_color", Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
-                self._add_input("Текст подписи", "ds_req_sub_text", "Обязательно")
-                self._add_color_picker("Цвет подписи", "ds_req_sub_color", Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
-                self._add_alignment_control("Выравнивание текста", "ds_req_gravity", 3)
-            elif self.current_target == 'opt_text': 
-                self._add_title("Опциональный модуль")
-                self._add_color_picker("Цвет заголовка", "ds_opt_title_color", Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
-                self._add_input("Текст подписи", "ds_opt_sub_text", "Опционально")
-                self._add_color_picker("Цвет подписи", "ds_opt_sub_color", Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
-                self._add_alignment_control("Выравнивание текста", "ds_opt_gravity", 3)
-            elif self.current_target == 'req_checkbox': 
-                self._add_title("Чекбокс (Обязательный)")
-                self._add_slider_float("Масштаб галочки", "ds_req_cb_scale", 0.5, 1.5, 1.0)
-                self._add_slider("Размер рамки (dp)", "ds_req_cb_frame", 16, 50, 26)
-            elif self.current_target == 'opt_checkbox': 
-                self._add_title("Чекбокс (Опциональный)")
-                self._add_slider_float("Масштаб галочки", "ds_opt_cb_scale", 0.5, 1.5, 1.0)
-                self._add_slider("Размер рамки (dp)", "ds_opt_cb_frame", 16, 50, 26)
-            
-            self.settings_container.setTranslationY(float(AndroidUtilities.dp(20))); 
-            self.settings_container.animate().alpha(1.0).translationY(0.0).setDuration(200).setInterpolator(jclass("org.telegram.ui.Components.CubicBezierInterpolator").EASE_OUT_QUINT).start()
-        except Exception as e: self.plugin.log(f"BUILD SETTINGS ERROR: {e}")
-
-    def _add_title(self, text):
-        tv = jclass("android.widget.TextView")(self.context); tv.setText(text); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader))); tv.setTextSize(1, 14.0); tv.setTypeface(AndroidUtilities.bold()); self.settings_container.addView(tv, LayoutHelper.createLinear(-1, -2, 23, 16, 0, 16))
-
-    def _add_toggle_btn(self, key, default):
-        btn = jclass("android.widget.TextView")(self.context); btn.setGravity(17); btn.setTypeface(AndroidUtilities.bold()); btn.setTextSize(1, 14.0); btn.setPadding(0, AndroidUtilities.dp(12), 0, AndroidUtilities.dp(12))
-        def apply_state(v, is_on):
-            if is_on: v.setText("КОНТЕЙНЕР ВКЛЮЧЕН"); v.setTextColor(jint(Theme.getColor(Theme.key_featuredStickers_buttonText))); v.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(8), jint(Theme.getColor(Theme.key_featuredStickers_addButton)), jint(Color.TRANSPARENT)))
-            else: v.setText("КОНТЕЙНЕР ВЫКЛЮЧЕН"); v.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhite))); v.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(8), jint(Theme.getColor(Theme.key_text_RedBold)), jint(Color.TRANSPARENT)))
-        apply_state(btn, self.plugin.get_setting(key, default))
-        btn.setOnClickListener(OnClickProxy(lambda v: (cur := self.plugin.get_setting(key, default), ns := not cur, self.plugin.set_setting(key, ns), btn.animate().alpha(0.0).setDuration(150).withEndAction(ActionRunnable(lambda: (apply_state(btn, ns), btn.animate().alpha(1.0).setDuration(150).start()))).start(), self._update_preview_from_settings(animate=True)))); self.settings_container.addView(btn, LayoutHelper.createLinear(-1, -2, 23, 12, 23, 12))
-
-    def _add_color_picker(self, text, key, default):
-        row = LinearLayout(self.context); row.setOrientation(0); row.setGravity(16); row.setPadding(AndroidUtilities.dp(23), AndroidUtilities.dp(12), AndroidUtilities.dp(23), AndroidUtilities.dp(12))
-        tv = jclass("android.widget.TextView")(self.context); tv.setText(text); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))); tv.setTextSize(1, 16.0); row.addView(tv, LayoutHelper.createLinear(0, -2, 1.0))
-        color_circle = View(self.context); update_circle = lambda c: color_circle.setBackground(Theme.createRoundRectDrawable(AndroidUtilities.dp(15), jint(c)))
-        update_circle(self.plugin.get_setting(key, default)); row.addView(color_circle, LayoutHelper.createLinear(30, 30, 16))
-        def on_color_click(v):
-            picker = ColorPickerBottomSheet(self.context, None); picker.setPipetteDelegate(DummyPipetteDelegate())
-            picker.setColorListener(ColorConsumer(lambda c: (self.plugin.set_setting(key, c), update_circle(c), self._update_preview_from_settings(animate=False)))); picker.setColor(jint(self.plugin.get_setting(key, default))); picker.show()
-        row.setOnClickListener(OnClickProxy(on_color_click)); self.settings_container.addView(row, LayoutHelper.createLinear(-1, -2))
-
-    def _add_alignment_control(self, text, key, default):
-        row = LinearLayout(self.context); row.setOrientation(1); row.setPadding(AndroidUtilities.dp(23), AndroidUtilities.dp(10), AndroidUtilities.dp(23), AndroidUtilities.dp(10)); tv = jclass("android.widget.TextView")(self.context); tv.setText(text); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))); row.addView(tv, LayoutHelper.createLinear(-1, -2, 0, 0, 0, 8)); btn_row = LinearLayout(self.context); btn_row.setOrientation(0); buttons_refs = []
-        def on_align_click(v, g):
-            self.plugin.set_setting(key, g); self._update_preview_from_settings(animate=True)
-            for bv, bg in buttons_refs:
-                is_act = (bg == g); bv.setTextColor(jint(Theme.getColor(Theme.key_featuredStickers_buttonText if is_act else Theme.key_windowBackgroundWhiteBlueHeader))); bv.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(8), jint(Theme.getColor(Theme.key_featuredStickers_addButton) if is_act else Color.TRANSPARENT), jint(Color.TRANSPARENT)))
-        for name, g in [("Лево", 3), ("Центр", 1), ("Право", 5)]:
-            btn = jclass("android.widget.TextView")(self.context); btn.setText(name); btn.setGravity(17); btn.setPadding(0, AndroidUtilities.dp(8), 0, AndroidUtilities.dp(8)); is_act = (self.plugin.get_setting(key, default) == g); btn.setTextColor(jint(Theme.getColor(Theme.key_featuredStickers_buttonText if is_act else Theme.key_windowBackgroundWhiteBlueHeader))); btn.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(8), jint(Theme.getColor(Theme.key_featuredStickers_addButton) if is_act else Color.TRANSPARENT), jint(Color.TRANSPARENT))); btn.setOnClickListener(OnClickProxy(lambda v, g_val=g: on_align_click(v, g_val))); buttons_refs.append((btn, g)); btn_row.addView(btn, LayoutHelper.createLinear(0, -2, 1.0, 2, 0, 2, 0))
-        row.addView(btn_row, LayoutHelper.createLinear(-1, -2)); self.settings_container.addView(row)
-
-    def _style_seekbar(self, sb):
-        CSL = jclass("android.content.res.ColorStateList"); accent, inactive = jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader)), jint(Theme.getColor(Theme.key_switchTrack))
-        try: sb.setProgressTintList(CSL.valueOf(accent)); sb.setThumbTintList(CSL.valueOf(accent)); sb.setProgressBackgroundTintList(CSL.valueOf(inactive))
-        except: pass
-
-    def _create_seek_touch_proxy(self):
-        class SeekTouchProxy(dynamic_proxy(jclass("android.view.View$OnTouchListener"))):
-            def onTouch(self, v, event):
-                try:
-                    action = event.getActionMasked(); p = v.getParent()
-                    if action == 0:
-                        while p: p.requestDisallowInterceptTouchEvent(True); p = p.getParent()
-                    elif action == 1 or action == 3:
-                        while p: p.requestDisallowInterceptTouchEvent(False); p = p.getParent()
-                except: pass
-                return False
-        return SeekTouchProxy()
-
-    def _add_slider(self, text, key, min_val, max_val, default):
-        ll = LinearLayout(self.context); ll.setOrientation(1); ll.setPadding(AndroidUtilities.dp(23), AndroidUtilities.dp(10), AndroidUtilities.dp(23), AndroidUtilities.dp(10)); tv = jclass("android.widget.TextView")(self.context); val = int(self.plugin.get_setting(key, default)); tv.setText(f"{text}: {val}"); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))); ll.addView(tv); sb = SeekBar(self.context); self._style_seekbar(sb); sb.setMax(max_val - min_val); sb.setProgress(val - min_val); sb.setOnTouchListener(self._create_seek_touch_proxy())
-        sb.setOnSeekBarChangeListener(SimpleSeekListener(lambda prog: (v := prog + min_val, tv.setText(f"{text}: {v}"), self.plugin.set_setting(key, v), self._update_preview_from_settings(animate=False)))); ll.addView(sb, LayoutHelper.createLinear(-1, -2, 0, 10, 0, 0)); self.settings_container.addView(ll)
-
-    def _add_slider_float(self, text, key, min_val, max_val, default):
-        ll = LinearLayout(self.context); ll.setOrientation(1); ll.setPadding(AndroidUtilities.dp(23), AndroidUtilities.dp(10), AndroidUtilities.dp(23), AndroidUtilities.dp(10)); tv = jclass("android.widget.TextView")(self.context); val = float(self.plugin.get_setting(key, default)); tv.setText(f"{text}: {val:.2f}"); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))); ll.addView(tv); sb = SeekBar(self.context); self._style_seekbar(sb); sb.setMax(100); sb.setProgress(int((val - min_val) / (max_val - min_val) * 100)); sb.setOnTouchListener(self._create_seek_touch_proxy())
-        sb.setOnSeekBarChangeListener(SimpleSeekListener(lambda prog: (v := min_val + (max_val - min_val) * (prog / 100.0), tv.setText(f"{text}: {v:.2f}"), self.plugin.set_setting(key, v), self._update_preview_from_settings(animate=False)))); ll.addView(sb, LayoutHelper.createLinear(-1, -2, 0, 10, 0, 0)); self.settings_container.addView(ll)
-
-    def _add_input(self, text, key, default):
-        ll = LinearLayout(self.context); ll.setOrientation(1); ll.setPadding(AndroidUtilities.dp(23), AndroidUtilities.dp(10), AndroidUtilities.dp(23), AndroidUtilities.dp(10)); tv = jclass("android.widget.TextView")(self.context); tv.setText(text); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader))); ll.addView(tv); et = EditTextBoldCursor(self.context); et.setText(str(self.plugin.get_setting(key, default))); et.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))); et.addTextChangedListener(SimpleTextWatcher(lambda s: (self.plugin.set_setting(key, s), self._update_preview_from_settings(animate=False)))); ll.addView(et, LayoutHelper.createLinear(-1, -2)); self.settings_container.addView(ll)
-
-    def _add_icon_selector_btn(self):
-        btn = jclass("android.widget.TextView")(self.context); btn.setText("Выбрать иконку (Поиск)"); btn.setGravity(17); btn.setTextColor(jint(Theme.getColor(Theme.key_featuredStickers_buttonText))); btn.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(8), jint(Theme.getColor(Theme.key_featuredStickers_addButton)), jint(Color.TRANSPARENT))); btn.setPadding(0, AndroidUtilities.dp(12), 0, AndroidUtilities.dp(12))
-        btn.setOnClickListener(OnClickProxy(lambda v: self._show_icons_bottom_sheet())); self.settings_container.addView(btn, LayoutHelper.createLinear(-1, -2, 23, 16, 23, 0))
-
-    def _show_icons_bottom_sheet(self):
-        try:
-            if not UniversalFragment: return run_on_ui_thread(lambda: BulletinHelper.show_error("Design Studio недоступен в данной версии клиента"))
-            delegate = IconSelectorDelegate(lambda name: (self.plugin.set_setting("ds_icon_res", name), self._update_preview_from_settings(animate=False))); fragment = UniversalFragment(delegate); delegate.fragment = fragment; self.base_fragment.presentFragment(fragment)
-        except Exception as e: self.plugin.log(f"ICON SHEET ERROR: {e}")
-
-class DummyPipetteDelegate(dynamic_proxy(jclass("org.telegram.ui.Components.Paint.ColorPickerBottomSheet$PipetteDelegate"))):
-    def onStartColorPipette(self): pass
-    def onStopColorPipette(self): pass
-    def getContainerView(self): return None
-    def getSnapshotDrawingView(self): return None
-    def onDrawImageOverCanvas(self, b, c): pass
-    def isPipetteVisible(self): return False
-    def isPipetteAvailable(self): return False
-    def onColorSelected(self, c): pass
-
-class ColorConsumer(dynamic_proxy(jclass("androidx.core.util.Consumer"))):
-    def __init__(self, callback): super().__init__(); self.callback = callback
-    def accept(self, color): self.callback(int(color))
-
-class SimpleTextWatcher(dynamic_proxy(TextWatcher)):
-    def __init__(self, callback): super().__init__(); self.callback = callback
-    def beforeTextChanged(self, s, start, count, after): pass
-    def onTextChanged(self, s, start, before, count): pass
-    def afterTextChanged(self, s): self.callback(str(s.toString()))
-
-class SimpleSeekListener(dynamic_proxy(SeekBar.OnSeekBarChangeListener)):
-    def __init__(self, callback): super().__init__(); self.callback = callback
-    def onProgressChanged(self, seekBar, progress, fromUser): self.callback(progress)
-    def onStartTrackingTouch(self, seekBar): pass
-    def onStopTrackingTouch(self, seekBar): pass
-
-class HighlightOverlayDelegate(dynamic_proxy(UniversalViewDelegate) if UniversalViewDelegate else object):
-    def __init__(self):
-        super().__init__()
-        self.target_rect, self.current_rect = RectF(), RectF()
-        self.view, self.target_radius = None, float(AndroidUtilities.dp(6))
-        self.accent_color = jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader))
-        self.stroke_paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        self.stroke_paint.setStyle(Paint.Style.STROKE)
-        self.stroke_paint.setStrokeWidth(float(AndroidUtilities.dp(2)))
-        self.stroke_paint.setColor(self.accent_color)
-        self.fill_paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        self.fill_paint.setStyle(Paint.Style.FILL)
-        self.fill_paint.setAlpha(60)
-        pattern_size = AndroidUtilities.dp(8)
-        bitmap = Bitmap.createBitmap(pattern_size, pattern_size, Bitmap.Config.ARGB_8888)
-        c = Canvas(bitmap); p = Paint(Paint.ANTI_ALIAS_FLAG); p.setColor(self.accent_color); p.setStrokeWidth(float(AndroidUtilities.dp(1)))
-        c.drawLine(0, pattern_size, pattern_size, 0, p)
-        self.fill_paint.setShader(BitmapShader(bitmap, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT))
-        self.animator, self.loc_view, self.loc_target = None, jarray(jint)(2), jarray(jint)(2)
-
-    def setTarget(self, target_view, parent_view, radius_dp=6):
-        if not target_view or not self.view: self.target_rect.set(0, 0, 0, 0); (self.view.invalidate() if self.view else None); return
-        self.target_radius = float(AndroidUtilities.dp(radius_dp))
-        self.view.getLocationInWindow(self.loc_view); target_view.getLocationInWindow(self.loc_target)
-        x, y = self.loc_target[0] - self.loc_view[0], self.loc_target[1] - self.loc_view[1]
-        self.target_rect.set(float(x), float(y), float(x + target_view.getWidth()), float(y + target_view.getHeight()))
-        if self.current_rect.isEmpty(): self.current_rect.set(self.target_rect); self.view.invalidate()
-        else:
-            if self.animator: self.animator.cancel()
-            class AnimUpdate(dynamic_proxy(jclass("android.animation.ValueAnimator$AnimatorUpdateListener"))):
-                def __init__(self, d, s, e): super().__init__(); self.d, self.s, self.e = d, s, e
-                def onAnimationUpdate(self, a):
-                    p = float(a.getAnimatedValue())
-                    self.d.current_rect.left = self.s.left + (self.e.left - self.s.left) * p
-                    self.d.current_rect.top = self.s.top + (self.e.top - self.s.top) * p
-                    self.d.current_rect.right = self.s.right + (self.e.right - self.s.right) * p
-                    self.d.current_rect.bottom = self.s.bottom + (self.e.bottom - self.s.bottom) * p
-                    (self.d.view.invalidate() if self.d.view else None)
-            self.animator = ValueAnimator.ofFloat(jarray(jfloat)([0.0, 1.0]))
-            self.animator.setDuration(250); self.animator.setInterpolator(jclass("org.telegram.ui.Components.CubicBezierInterpolator").EASE_OUT_QUINT)
-            self.animator.addUpdateListener(AnimUpdate(self, RectF(self.current_rect), self.target_rect)); self.animator.start()
-
-    def onDraw(self, canvas, callback):
-        if not self.current_rect.isEmpty(): rad = self.target_radius; canvas.drawRoundRect(self.current_rect, rad, rad, self.fill_paint); canvas.drawRoundRect(self.current_rect, rad, rad, self.stroke_paint)
-        callback.run(canvas)
-    def onAttachedToWindow(self): pass
-    def onDetachedFromWindow(self): pass
-    def onInitializeAccessibilityNodeInfo(self, info, callback): callback.run(info)
-    def onMeasure(self, w, h, callback): callback.run(Integer(w), Integer(h))
-    def onTouchEvent(self, event, callback): return Boolean(callback.run(event))
-
-class IconSelectorDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
-    def __init__(self, callback):
-        super().__init__(); self.callback = callback; self.search_et, self.grid_layout, self.fragment, self.progress, self.search_timer = None, None, None, None, None
-        self.all_icons, self.icon_map = [], {}
-        try:
-            R_tg = jclass("org.telegram.messenger.R").drawable
-            for f in dir(R_tg): (self.icon_map.update({f: getattr(R_tg, f)}) if f.startswith("msg_") or f.startswith("ic_") else None)
-        except: pass
-        try:
-            R_ext = jclass("com.exteragram.messenger.R").drawable
-            for f in dir(R_ext): (self.icon_map.update({f: getattr(R_ext, f)}) if f.startswith("msg_") or f.startswith("ic_") else None)
-        except: pass
-        self.all_icons = sorted(list(self.icon_map.keys()))
-
-    def onFragmentCreate(self): pass
-    def onFragmentDestroy(self): pass
-    def onBackPressed(self): return None 
-    def getTitle(self): return "Выбор иконки"
-    def onMenuItemClick(self, id): pass
-    def fillItems(self, items, adapter): pass
-    def onClick(self, item, view, position, x, y): pass
-    def onLongClick(self, item, view, position, x, y): return False
-    def beforeCreateView(self): return None 
-
-    def afterCreateView(self, view):
-        context = view.getContext(); root = FrameLayout(context); root.setBackgroundColor(jint(Theme.getColor(Theme.key_windowBackgroundWhite)))
-        search_cont = FrameLayout(context); search_cont.setBackgroundColor(jint(Theme.getColor(Theme.key_windowBackgroundWhite))); search_cont.setPadding(0, AndroidUtilities.dp(8), 0, AndroidUtilities.dp(8))
-        search_bg = View(context); search_bg.setBackground(Theme.createRoundRectDrawable(AndroidUtilities.dp(18), jint(Theme.getColor(Theme.key_dialogSearchBackground))))
-        search_cont.addView(search_bg, LayoutHelper.createFrame(-1, 36, 51, 14, 0, 14, 0))
-        search_icon = jclass("android.widget.ImageView")(context); search_icon.setImageResource(jclass("org.telegram.messenger.R").drawable.smiles_inputsearch); search_icon.setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(jint(Theme.getColor(Theme.key_dialogSearchIcon)), jclass("android.graphics.PorterDuff$Mode").MULTIPLY)); search_icon.setScaleType(jclass("android.widget.ImageView$ScaleType").CENTER)
-        search_cont.addView(search_icon, LayoutHelper.createFrame(36, 36, 51, 16, 0, 0, 0))
-        self.search_et = EditTextBoldCursor(context); self.search_et.setTextSize(1, 16.0); self.search_et.setHintTextColor(jint(Theme.getColor(Theme.key_dialogSearchHint))); self.search_et.setTextColor(jint(Theme.getColor(Theme.key_dialogSearchText))); self.search_et.setBackgroundDrawable(None); self.search_et.setPadding(0,0,0,0); self.search_et.setSingleLine(True); self.search_et.setHint("Поиск иконки (msg_...)"); self.search_et.setCursorColor(jint(Theme.getColor(Theme.key_featuredStickers_addedIcon))); self.search_et.setImeOptions(jclass("android.view.inputmethod.EditorInfo").IME_ACTION_SEARCH | jclass("android.view.inputmethod.EditorInfo").IME_FLAG_NO_EXTRACT_UI)
-        self.search_et.setOnClickListener(OnClickProxy(lambda v: (self.search_et.requestFocus(), AndroidUtilities.showKeyboard(self.search_et)))); search_cont.addView(self.search_et, LayoutHelper.createFrame(-1, 36, 51, 54, 0, 14, 0)); root.addView(search_cont, LayoutHelper.createFrame(-1, 52, 48))
-        scroll = ScrollView(context); self.grid_layout = GridLayout(context); self.grid_layout.setColumnCount(4); self.grid_layout.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(16), AndroidUtilities.dp(16), AndroidUtilities.dp(16)); scroll.addView(self.grid_layout); root.addView(scroll, LayoutHelper.createFrame(-1, -1, 48, 0, 52, 0, 0))
-        if CircularProgressIndicator:
-            self.progress = CircularProgressIndicator(context); self.progress.setIndeterminate(True); self.progress.setIndicatorColor(jint(Theme.getColor(Theme.key_featuredStickers_addButton))); self.progress.setVisibility(8); root.addView(self.progress, LayoutHelper.createFrame(48, 48, 17))
-        self.populate("", context)
-        class TextChangeProxy(dynamic_proxy(jclass("android.text.TextWatcher"))):
-            def __init__(self, d, ctx): super().__init__(); self.d, self.ctx = d, ctx
-            def afterTextChanged(self, s):
-                query = str(s.toString())
-                if self.d.search_timer: self.d.search_timer.cancel()
-                if len(query) > 0 and self.d.progress: self.d.progress.setVisibility(0); self.d.grid_layout.setAlpha(0.3)
-                self.d.search_timer = threading.Timer(0.8, lambda: run_on_ui_thread(lambda: self.d.populate(query, self.ctx))); self.d.search_timer.start()
-            def beforeTextChanged(self, s, st, c, a): pass
-            def onTextChanged(self, s, st, b, c): pass
-        self.search_et.addTextChangedListener(TextChangeProxy(self, context)); return root
-
-    def populate(self, query, context):
-        if not self.grid_layout: return
-        self.grid_layout.removeAllViews(); count, search_terms = 0, query.lower().split()
-        for ic_name in self.all_icons:
-            name_lower, match = ic_name.lower(), True
-            if query:
-                for term in search_terms:
-                    if term not in name_lower: match = False; break
-            if match:
-                try:
-                    res_id = self.icon_map[ic_name]; iv = jclass("android.widget.ImageView")(context); iv.setImageResource(res_id); iv.setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(jint(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon)), jclass("android.graphics.PorterDuff$Mode").SRC_IN)); iv.setBackground(Theme.createSelectorDrawable(jint(Theme.getColor(Theme.key_listSelector)), 1)); iv.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(16), AndroidUtilities.dp(16), AndroidUtilities.dp(16)); iv.setOnClickListener(OnClickProxy(lambda v, n=ic_name: (self.callback(n), self.fragment.finishFragment() if self.fragment else None)))
-                    params = GridLayout.LayoutParams(); params.width = (AndroidUtilities.displaySize.x - AndroidUtilities.dp(32)) // 4; params.height = params.width; self.grid_layout.addView(iv, params); count += 1
-                    if count >= 60 and not query: break 
-                    if count >= 300 and query: break 
-                except: pass
-        if self.progress: self.progress.setVisibility(8); self.grid_layout.setAlpha(1.0)
+class OnLongClickProxy(dynamic_proxy(jclass("android.view.View$OnLongClickListener"))):
+    def __init__(self, cb): super().__init__(); self.cb = cb
+    def onLongClick(self, v): return self.cb(v)
 
 class InstallSheetHook(MethodHook):
     def __init__(self, plugin): self.plugin = plugin
@@ -1377,6 +1089,9 @@ class InstallSheetHook(MethodHook):
                 CubicBezierInterpolator = jclass("org.telegram.ui.Components.CubicBezierInterpolator")
                 ValueAnimator = jclass("android.animation.ValueAnimator")
                 MeasureSpec = jclass("android.view.View$MeasureSpec")
+                import ast
+                jarray = __import__("java").jarray
+                jfloat = __import__("java").jfloat
                 FrameLayout = jclass("android.widget.FrameLayout")
 
                 sheet = param.thisObject
@@ -1643,7 +1358,7 @@ class Plugin2ShareHook(MethodReplacement):
                 with open(plugin_path, 'r', encoding='utf-8') as f:
                     data = f.read()
                     match = re.search(r'__ReqRements__\s*=\s*(\{.*?\})', data, re.DOTALL)
-                    if match: reqs = ast.literal_eval(match.group(1))
+                    if match: reqs = eval(match.group(1))
             if not reqs: return jclass("de.robv.android.xposed.XposedBridge").invokeOriginalMethod(param.method, param.thisObject, param.args)
             AppLoader = jclass("org.telegram.messenger.ApplicationLoader")
             cache_dir = str(AppLoader.applicationContext.getCacheDir().getAbsolutePath())
@@ -1655,7 +1370,7 @@ class Plugin2ShareHook(MethodReplacement):
             plugin2_path = os.path.join(share_dir, f"{plugin_id}.plugin2")
             loader_root = ReLoad.get().root
             with zipfile.ZipFile(plugin2_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                zf.write(plugin_share_path, f"{plugin_id}.plugin")
+                zf.write(plugin_path, f"{plugin_id}.plugin")
                 for so_name in reqs.keys():
                     so_path = os.path.join(loader_root, f"{so_name}.so")
                     if os.path.exists(so_path) and os.path.getsize(so_path) > 1024:
@@ -1677,128 +1392,570 @@ class Plugin2ShareHook(MethodReplacement):
             return None
         except Exception as e: mlog(f"Plugin2ShareHook Error: {e}"); return jclass("de.robv.android.xposed.XposedBridge").invokeOriginalMethod(param.method, param.thisObject, param.args)
 
+class DummyPipetteDelegate(dynamic_proxy(jclass("org.telegram.ui.Components.Paint.ColorPickerBottomSheet$PipetteDelegate"))):
+    def onStartColorPipette(self): pass
+    def onStopColorPipette(self): pass
+    def getContainerView(self): return None
+    def getSnapshotDrawingView(self): return None
+    def onDrawImageOverCanvas(self, b, c): pass
+    def isPipetteVisible(self): return False
+    def isPipetteAvailable(self): return False
+    def onColorSelected(self, c): pass
+
+class ActionRunnable(dynamic_proxy(jclass("java.lang.Runnable"))):
+    def __init__(self, callback): super().__init__(); self.callback = callback
+    def run(self): self.callback()
+
+class ColorConsumer(dynamic_proxy(jclass("androidx.core.util.Consumer"))):
+    def __init__(self, callback): super().__init__(); self.callback = callback
+    def accept(self, color): self.callback(int(color))
+
+class SimpleTextWatcher(dynamic_proxy(TextWatcher)):
+    def __init__(self, callback): super().__init__(); self.callback = callback
+    def beforeTextChanged(self, s, start, count, after): pass
+    def onTextChanged(self, s, start, before, count): pass
+    def afterTextChanged(self, s): self.callback(str(s.toString()))
+
+class SimpleSeekListener(dynamic_proxy(SeekBar.OnSeekBarChangeListener)):
+    def __init__(self, callback): super().__init__(); self.callback = callback
+    def onProgressChanged(self, seekBar, progress, fromUser): self.callback(progress)
+    def onStartTrackingTouch(self, seekBar): pass
+    def onStopTrackingTouch(self, seekBar): pass
+
+UniversalView = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalView")
+UniversalViewDelegate = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalView$UniversalViewDelegate")
+
+class HighlightOverlayDelegate(dynamic_proxy(UniversalViewDelegate) if UniversalViewDelegate else object):
+    def __init__(self):
+        super().__init__()
+        self.target_rect, self.current_rect = RectF(), RectF()
+        self.view, self.target_radius = None, float(AndroidUtilities.dp(6))
+        self.accent_color = jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader))
+        self.stroke_paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        self.stroke_paint.setStyle(Paint.Style.STROKE)
+        self.stroke_paint.setStrokeWidth(float(AndroidUtilities.dp(2)))
+        self.stroke_paint.setColor(self.accent_color)
+        self.fill_paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        self.fill_paint.setStyle(Paint.Style.FILL)
+        self.fill_paint.setAlpha(60)
+        pattern_size = AndroidUtilities.dp(8)
+        bitmap = Bitmap.createBitmap(pattern_size, pattern_size, Bitmap.Config.ARGB_8888)
+        c = Canvas(bitmap); p = Paint(Paint.ANTI_ALIAS_FLAG); p.setColor(self.accent_color); p.setStrokeWidth(float(AndroidUtilities.dp(1)))
+        c.drawLine(0, pattern_size, pattern_size, 0, p)
+        self.fill_paint.setShader(BitmapShader(bitmap, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT))
+        self.animator, self.loc_view, self.loc_target = None, jarray(jint)(2), jarray(jint)(2)
+
+    def setTarget(self, target_view, parent_view, radius_dp=6):
+        if not target_view or not self.view: self.target_rect.set(0, 0, 0, 0); (self.view.invalidate() if self.view else None); return
+        self.target_radius = float(AndroidUtilities.dp(radius_dp))
+        self.view.getLocationInWindow(self.loc_view); target_view.getLocationInWindow(self.loc_target)
+        x, y = self.loc_target[0] - self.loc_view[0], self.loc_target[1] - self.loc_view[1]
+        self.target_rect.set(float(x), float(y), float(x + target_view.getWidth()), float(y + target_view.getHeight()))
+        if self.current_rect.isEmpty(): self.current_rect.set(self.target_rect); self.view.invalidate()
+        else:
+            if self.animator: self.animator.cancel()
+            class AnimUpdate(dynamic_proxy(jclass("android.animation.ValueAnimator$AnimatorUpdateListener"))):
+                def __init__(self, d, s, e): super().__init__(); self.d, self.s, self.e = d, s, e
+                def onAnimationUpdate(self, a):
+                    p = float(a.getAnimatedValue())
+                    self.d.current_rect.left = self.s.left + (self.e.left - self.s.left) * p
+                    self.d.current_rect.top = self.s.top + (self.e.top - self.s.top) * p
+                    self.d.current_rect.right = self.s.right + (self.e.right - self.s.right) * p
+                    self.d.current_rect.bottom = self.s.bottom + (self.e.bottom - self.s.bottom) * p
+                    (self.d.view.invalidate() if self.d.view else None)
+            self.animator = ValueAnimator.ofFloat(jarray(jfloat)([0.0, 1.0]))
+            self.animator.setDuration(250); self.animator.setInterpolator(jclass("org.telegram.ui.Components.CubicBezierInterpolator").EASE_OUT_QUINT)
+            self.animator.addUpdateListener(AnimUpdate(self, RectF(self.current_rect), self.target_rect)); self.animator.start()
+
+    def onDraw(self, canvas, callback):
+        if not self.current_rect.isEmpty(): rad = self.target_radius; canvas.drawRoundRect(self.current_rect, rad, rad, self.fill_paint); canvas.drawRoundRect(self.current_rect, rad, rad, self.stroke_paint)
+        callback.run(canvas)
+    def onAttachedToWindow(self): pass
+    def onDetachedFromWindow(self): pass
+    def onInitializeAccessibilityNodeInfo(self, info, callback): callback.run(info)
+    def onMeasure(self, w, h, callback): callback.run(Integer(w), Integer(h))
+    def onTouchEvent(self, event, callback): return Boolean(callback.run(event))
+
+UniversalFragment = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalFragment")
+UniversalFragmentDelegate = safe_jclass("com.exteragram.messenger.plugins.ui.components.templates.UniversalFragment$UniversalFragmentDelegate")
+CircularProgressIndicator = safe_jclass("com.google.android.material.progressindicator.CircularProgressIndicator")
+
+class IconSelectorDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
+    def __init__(self, callback):
+        super().__init__(); self.callback = callback; self.search_et, self.grid_layout, self.fragment, self.progress, self.search_timer = None, None, None, None, None
+        self.all_icons, self.icon_map = [], {}
+        try:
+            R_tg = jclass("org.telegram.messenger.R").drawable
+            for f in dir(R_tg): (self.icon_map.update({f: getattr(R_tg, f)}) if f.startswith("msg_") or f.startswith("ic_") else None)
+        except: pass
+        try:
+            R_ext = jclass("com.exteragram.messenger.R").drawable
+            for f in dir(R_ext): (self.icon_map.update({f: getattr(R_ext, f)}) if f.startswith("msg_") or f.startswith("ic_") else None)
+        except: pass
+        self.all_icons = sorted(list(self.icon_map.keys()))
+
+    def onFragmentCreate(self): pass
+    def onFragmentDestroy(self): pass
+    def onBackPressed(self): return None 
+    def getTitle(self): return "Выбор иконки"
+    def onMenuItemClick(self, id): pass
+    def fillItems(self, items, adapter): pass
+    def onClick(self, item, view, position, x, y): pass
+    def onLongClick(self, item, view, position, x, y): return False
+    def beforeCreateView(self): return None 
+
+    def afterCreateView(self, view):
+        context = view.getContext(); root = FrameLayout(context); root.setBackgroundColor(jint(Theme.getColor(Theme.key_windowBackgroundWhite)))
+        search_cont = FrameLayout(context); search_cont.setBackgroundColor(jint(Theme.getColor(Theme.key_windowBackgroundWhite))); search_cont.setPadding(0, AndroidUtilities.dp(8), 0, AndroidUtilities.dp(8))
+        search_bg = View(context); search_bg.setBackground(Theme.createRoundRectDrawable(AndroidUtilities.dp(18), jint(Theme.getColor(Theme.key_dialogSearchBackground))))
+        search_cont.addView(search_bg, LayoutHelper.createFrame(-1, 36, 51, 14, 0, 14, 0))
+        search_icon = jclass("android.widget.ImageView")(context); search_icon.setImageResource(jclass("org.telegram.messenger.R").drawable.smiles_inputsearch); search_icon.setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(jint(Theme.getColor(Theme.key_dialogSearchIcon)), jclass("android.graphics.PorterDuff$Mode").MULTIPLY)); search_icon.setScaleType(jclass("android.widget.ImageView$ScaleType").CENTER)
+        search_cont.addView(search_icon, LayoutHelper.createFrame(36, 36, 51, 16, 0, 0, 0))
+        self.search_et = EditTextBoldCursor(context); self.search_et.setTextSize(1, 16.0); self.search_et.setHintTextColor(jint(Theme.getColor(Theme.key_dialogSearchHint))); self.search_et.setTextColor(jint(Theme.getColor(Theme.key_dialogSearchText))); self.search_et.setBackgroundDrawable(None); self.search_et.setPadding(0,0,0,0); self.search_et.setSingleLine(True); self.search_et.setHint("Поиск иконки (msg_...)"); self.search_et.setCursorColor(jint(Theme.getColor(Theme.key_featuredStickers_addedIcon))); self.search_et.setImeOptions(jclass("android.view.inputmethod.EditorInfo").IME_ACTION_SEARCH | jclass("android.view.inputmethod.EditorInfo").IME_FLAG_NO_EXTRACT_UI)
+        self.search_et.setOnClickListener(OnClickProxy(lambda v: (self.search_et.requestFocus(), AndroidUtilities.showKeyboard(self.search_et)))); search_cont.addView(self.search_et, LayoutHelper.createFrame(-1, 36, 51, 54, 0, 14, 0)); root.addView(search_cont, LayoutHelper.createFrame(-1, 52, 48))
+        scroll = ScrollView(context); self.grid_layout = GridLayout(context); self.grid_layout.setColumnCount(4); self.grid_layout.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(16), AndroidUtilities.dp(16), AndroidUtilities.dp(16)); scroll.addView(self.grid_layout); root.addView(scroll, LayoutHelper.createFrame(-1, -1, 48, 0, 52, 0, 0))
+        if CircularProgressIndicator:
+            self.progress = CircularProgressIndicator(context); self.progress.setIndeterminate(True); self.progress.setIndicatorColor(jint(Theme.getColor(Theme.key_featuredStickers_addButton))); self.progress.setVisibility(8); root.addView(self.progress, LayoutHelper.createFrame(48, 48, 17))
+        self.populate("", context)
+        class TextChangeProxy(dynamic_proxy(jclass("android.text.TextWatcher"))):
+            def __init__(self, d, ctx): super().__init__(); self.d, self.ctx = d, ctx
+            def afterTextChanged(self, s):
+                query = str(s.toString())
+                if self.d.search_timer: self.d.search_timer.cancel()
+                if len(query) > 0 and self.d.progress: self.d.progress.setVisibility(0); self.d.grid_layout.setAlpha(0.3)
+                self.d.search_timer = threading.Timer(0.8, lambda: run_on_ui_thread(lambda: self.d.populate(query, self.ctx))); self.d.search_timer.start()
+            def beforeTextChanged(self, s, st, c, a): pass
+            def onTextChanged(self, s, st, b, c): pass
+        self.search_et.addTextChangedListener(TextChangeProxy(self, context)); return root
+
+    def populate(self, query, context):
+        if not self.grid_layout: return
+        self.grid_layout.removeAllViews(); count, search_terms = 0, query.lower().split()
+        for ic_name in self.all_icons:
+            name_lower, match = ic_name.lower(), True
+            if query:
+                for term in search_terms:
+                    if term not in name_lower: match = False; break
+            if match:
+                try:
+                    res_id = self.icon_map[ic_name]; iv = jclass("android.widget.ImageView")(context); iv.setImageResource(res_id); iv.setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(jint(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon)), jclass("android.graphics.PorterDuff$Mode").SRC_IN)); iv.setBackground(Theme.createSelectorDrawable(jint(Theme.getColor(Theme.key_listSelector)), 1)); iv.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(16), AndroidUtilities.dp(16), AndroidUtilities.dp(16)); iv.setOnClickListener(OnClickProxy(lambda v, n=ic_name: (self.callback(n), self.fragment.finishFragment() if self.fragment else None)))
+                    params = GridLayout.LayoutParams(); params.width = (AndroidUtilities.displaySize.x - AndroidUtilities.dp(32)) // 4; params.height = params.width; self.grid_layout.addView(iv, params); count += 1
+                    if count >= 60 and not query: break 
+                    if count >= 300 and query: break 
+                except: pass
+        if self.progress: self.progress.setVisibility(8); self.grid_layout.setAlpha(1.0)
+
+class DesignStudioController:
+    def __init__(self, context, plugin, base_fragment):
+        self.plugin, self.base_fragment, self.context = plugin, base_fragment, context
+        self.current_target, self.ui_elements = None, {}
+        self.root_view = LinearLayout(self.context); self.root_view.setOrientation(LinearLayout.VERTICAL); self.root_view.setBackgroundColor(jint(Theme.getColor(Theme.key_windowBackgroundWhite)))
+        try: self._build_ui(); self._update_preview_from_settings(animate=False)
+        except Exception as e: self.plugin.log(f"DesignStudioController BUILD ERROR: {e}")
+    def get_view(self): return self.root_view
+    def _clear_selection(self):
+        if self.current_target is not None: self.overlay_delegate.setTarget(None, None, 0); self.current_target = None; self.settings_container.animate().alpha(0.0).translationY(float(AndroidUtilities.dp(20))).setDuration(150).start()
+    def _build_ui(self):
+        self.preview_container = FrameLayout(self.context); self.preview_container.setBackgroundColor(jint(Theme.getColor(Theme.key_windowBackgroundGray)))
+        self.preview_container.setOnClickListener(OnClickProxy(lambda v: self._clear_selection())); list_root = LinearLayout(self.context); list_root.setOrientation(LinearLayout.VERTICAL); list_root.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(8), AndroidUtilities.dp(16), AndroidUtilities.dp(16))
+        badge_cont = LinearLayout(self.context); badge_cont.setOrientation(0); badge_cont.setGravity(1); badge = LinearLayout(self.context); badge.setOrientation(0); badge.setGravity(17)
+        accent, bg_color = jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader)), jint(Theme.getColor(Theme.key_windowBackgroundWhite)); badge_bg = ColorUtils.blendARGB(bg_color, accent, 0.12); pressed_color = ColorUtils.blendARGB(badge_bg, jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText)), 0.1)
+        badge.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(20), badge_bg, pressed_color)); badge.setPadding(AndroidUtilities.dp(14), AndroidUtilities.dp(6), AndroidUtilities.dp(14), AndroidUtilities.dp(6))
+        t = jclass("android.widget.TextView")(self.context); t.setText("Модули: 2"); t.setTypeface(AndroidUtilities.bold()); t.setTextSize(1, 13.0); t.setTextColor(accent); badge.addView(t)
+        arrow = jclass("android.widget.ImageView")(self.context); arrow.setImageResource(jclass("org.telegram.messenger.R").drawable.msg_expand); arrow.setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(accent, jclass("android.graphics.PorterDuff$Mode").SRC_IN)); arrow.setRotation(0.0); arrow.setScaleX(1.4); arrow.setScaleY(1.4)
+        badge.addView(arrow, LayoutHelper.createLinear(14, 14, 16, 5, 0, 0, 0)); badge_cont.addView(badge, LayoutHelper.createLinear(-2, -2)); list_root.addView(badge_cont, LayoutHelper.createLinear(-1, -2, 1, 0, 0, 0, 12))
+        anim_wrapper = LinearLayout(self.context); anim_wrapper.setOrientation(1); anim_wrapper.setClipChildren(True); anim_wrapper.setClipToPadding(False); anim_wrapper.setVisibility(8); self.mock_list = anim_wrapper
+        self.ui_elements['container'] = LinearLayout(self.context); self.ui_elements['container'].setOrientation(LinearLayout.VERTICAL)
+        self.ui_elements['row_req'] = LinearLayout(self.context); self.ui_elements['row_req'].setPadding(AndroidUtilities.dp(18), AndroidUtilities.dp(10), AndroidUtilities.dp(18), AndroidUtilities.dp(10)); self.ui_elements['row_req'].setGravity(16)
+        gray_icon_color = jint(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon)); self.ui_elements['icon_req'] = jclass("android.widget.ImageView")(self.context); self.ui_elements['icon_req'].setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(gray_icon_color, jclass("android.graphics.PorterDuff$Mode").SRC_IN)); self.ui_elements['row_req'].addView(self.ui_elements['icon_req'], LayoutHelper.createLinear(22, 22, 16, 0, 0, 14, 0))
+        self.ui_elements['tl1'] = LinearLayout(self.context); self.ui_elements['tl1'].setOrientation(LinearLayout.VERTICAL); self.ui_elements['tl1'].setGravity(16)
+        self.ui_elements['req_title'] = jclass("android.widget.TextView")(self.context); self.ui_elements['req_title'].setText("Название зависимости"); self.ui_elements['req_title'].setTextSize(1, 15.0); self.ui_elements['req_title'].setTypeface(AndroidUtilities.bold()); self.ui_elements['tl1'].addView(self.ui_elements['req_title'], LayoutHelper.createLinear(-1, -2))
+        self.ui_elements['req_sub'] = jclass("android.widget.TextView")(self.context); self.ui_elements['req_sub'].setTextSize(1, 12.0); self.ui_elements['tl1'].addView(self.ui_elements['req_sub'], LayoutHelper.createLinear(-1, -2)); self.ui_elements['row_req'].addView(self.ui_elements['tl1'], LayoutHelper.createLinear(0, -2, 1.0, 16, 0, 0, 8, 0))
+        self.ui_elements['req_cb'] = jclass("org.telegram.ui.Components.CheckBox2")(self.context, 21); self.ui_elements['req_cb'].setDrawBackgroundAsArc(10); self.ui_elements['req_cb'].setChecked(True, False); self.ui_elements['req_cb'].setEnabled(False)
+        self.ui_elements['req_cb_container'] = FrameLayout(self.context); self.ui_elements['req_cb_container'].addView(self.ui_elements['req_cb'], LayoutHelper.createFrame(-2, -2, 17)); self.ui_elements['row_req'].setAlpha(0.6); self.ui_elements['row_req'].addView(self.ui_elements['req_cb_container'])
+        self.ui_elements['row_opt'] = LinearLayout(self.context); self.ui_elements['row_opt'].setPadding(AndroidUtilities.dp(18), AndroidUtilities.dp(10), AndroidUtilities.dp(18), AndroidUtilities.dp(10)); self.ui_elements['row_opt'].setGravity(16)
+        self.ui_elements['icon_opt'] = jclass("android.widget.ImageView")(self.context); self.ui_elements['icon_opt'].setColorFilter(jclass("android.graphics.PorterDuffColorFilter")(gray_icon_color, jclass("android.graphics.PorterDuff$Mode").SRC_IN)); self.ui_elements['row_opt'].addView(self.ui_elements['icon_opt'], LayoutHelper.createLinear(22, 22, 16, 0, 0, 14, 0))
+        self.ui_elements['tl2'] = LinearLayout(self.context); self.ui_elements['tl2'].setOrientation(LinearLayout.VERTICAL); self.ui_elements['tl2'].setGravity(16)
+        self.ui_elements['opt_title'] = jclass("android.widget.TextView")(self.context); self.ui_elements['opt_title'].setText("Название зависимости"); self.ui_elements['opt_title'].setTextSize(1, 15.0); self.ui_elements['opt_title'].setTypeface(AndroidUtilities.bold()); self.ui_elements['tl2'].addView(self.ui_elements['opt_title'], LayoutHelper.createLinear(-1, -2))
+        self.ui_elements['opt_sub'] = jclass("android.widget.TextView")(self.context); self.ui_elements['opt_sub'].setTextSize(1, 12.0); self.ui_elements['tl2'].addView(self.ui_elements['opt_sub'], LayoutHelper.createLinear(-1, -2)); self.ui_elements['row_opt'].addView(self.ui_elements['tl2'], LayoutHelper.createLinear(0, -2, 1.0, 16, 0, 0, 8, 0))
+        self.ui_elements['opt_cb'] = jclass("org.telegram.ui.Components.CheckBox2")(self.context, 21); self.ui_elements['opt_cb'].setDrawBackgroundAsArc(10); self.ui_elements['opt_cb'].setChecked(True, False); self.ui_elements['opt_cb_container'] = FrameLayout(self.context); self.ui_elements['opt_cb_container'].addView(self.ui_elements['opt_cb'], LayoutHelper.createFrame(-2, -2, 17)); self.ui_elements['row_opt'].addView(self.ui_elements['opt_cb_container']); self.ui_elements['container'].addView(self.ui_elements['row_req']); self.ui_elements['container'].addView(self.ui_elements['row_opt']); anim_wrapper.addView(self.ui_elements['container'], LayoutHelper.createLinear(-1, -2)); list_root.addView(anim_wrapper, LayoutHelper.createLinear(-1, -2)); self.preview_container.addView(list_root, LayoutHelper.createFrame(-1, -2, 17))
+        if UniversalView:
+            self.overlay_delegate = HighlightOverlayDelegate(); self.overlay_view = UniversalView(self.context, self.overlay_delegate); self.overlay_delegate.view = self.overlay_view; self.preview_container.addView(self.overlay_view, LayoutHelper.createFrame(-1, -1))
+        self.root_view.addView(self.preview_container, LayoutHelper.createLinear(-1, -2))
+        self._setup_click(self.ui_elements['container'], 'container', is_container=True); self._setup_click(self.ui_elements['icon_req'], 'icon'); self._setup_click(self.ui_elements['icon_opt'], 'icon'); self._setup_click(self.ui_elements['tl1'], 'req_text'); self._setup_click(self.ui_elements['tl2'], 'opt_text'); self._setup_click(self.ui_elements['req_cb_container'], 'req_checkbox'); self._setup_click(self.ui_elements['opt_checkbox'], 'opt_checkbox')
+        anim_state = {"full_height": 0, "current_anim": None, "progress": 0.0, "is_expanded": False}
+        def badge_toggle(v):
+            self._clear_selection(); target_expanded = not anim_state["is_expanded"]; anim_state["is_expanded"] = target_expanded
+            if anim_state["current_anim"]: anim_state["current_anim"].cancel()
+            if anim_state["full_height"] == 0:
+                anim_wrapper.setVisibility(0); parent_w = list_root.getWidth(); (parent_w := AndroidUtilities.displaySize.x if parent_w == 0 else parent_w); anim_wrapper.measure(jclass("android.view.View$MeasureSpec").makeMeasureSpec(parent_w, 1073741824), jclass("android.view.View$MeasureSpec").makeMeasureSpec(0, 0)); anim_state["full_height"] = anim_wrapper.getMeasuredHeight()
+                lp = self.ui_elements['container'].getLayoutParams(); lp.height = self.ui_elements['container'].getMeasuredHeight(); self.ui_elements['container'].setLayoutParams(lp)
+            start_val, end_val = anim_state["progress"], (1.0 if target_expanded else 0.0)
+            if start_val == end_val: return
+            anim = jclass("android.animation.ValueAnimator").ofFloat(jarray(jfloat)([start_val, end_val])); anim.setDuration(int(350 * (0.4 + 0.6 * abs(end_val - start_val)))); anim.setInterpolator(jclass("org.telegram.ui.Components.CubicBezierInterpolator").EASE_OUT_QUINT); anim.addUpdateListener(ExpandAnimUpdate(anim_wrapper, self.ui_elements['container'], arrow, anim_state["full_height"], anim_state)); anim.addListener(ExpandAnimListener(anim_wrapper)); anim_state["current_anim"] = anim; anim.start()
+        badge.setOnClickListener(OnClickProxy(badge_toggle)); divider = View(self.context); divider.setBackgroundColor(jint(Theme.getColor(Theme.key_divider))); self.root_view.addView(divider, LayoutHelper.createLinear(-1, 1)); self.settings_scroll = ScrollView(self.context); self.settings_scroll.setFillViewport(True); self.settings_scroll.setClipToPadding(False); self.settings_container = LinearLayout(self.context); self.settings_container.setOrientation(LinearLayout.VERTICAL); self.settings_container.setPadding(0, AndroidUtilities.dp(8), 0, AndroidUtilities.dp(16)); self.settings_scroll.addView(self.settings_container, LayoutHelper.createScroll(-1, -2, 0)); self.root_view.addView(self.settings_scroll, LayoutHelper.createLinear(-1, -1, 1.0)); self._clear_selection() 
+
+    def _setup_click(self, view, type_str, is_container=False):
+        view.setOnClickListener(OnClickProxy(lambda v, t=type_str, is_cont=is_container: (rad := (self.plugin.get_setting("ds_cont_radius", 16) if is_cont else 6), self.overlay_delegate.setTarget(view, self.mock_list, rad) if self.overlay_delegate else None, self._open_settings_for(t))))
+
+    def _update_preview_from_settings(self, animate=True):
+        try:
+            if animate: (TManager := jclass("android.transition.TransitionManager")).beginDelayedTransition(self.ui_elements['container'], jclass("android.transition.AutoTransition")().setDuration(250).setInterpolator(jclass("org.telegram.ui.Components.CubicBezierInterpolator").EASE_OUT_QUINT))
+            has_cont = self.plugin.get_setting("ds_cont_enabled", True)
+            if has_cont:
+                color, rad = jint(self.plugin.get_setting("ds_cont_color", Theme.getColor(Theme.key_windowBackgroundGray))), self.plugin.get_setting("ds_cont_radius", 16)
+                self.ui_elements['container'].setBackground(Theme.createRoundRectDrawable(AndroidUtilities.dp(rad), AndroidUtilities.dp(rad), color)); self.ui_elements['container'].setPadding(0, AndroidUtilities.dp(6), 0, AndroidUtilities.dp(6))
+            else: self.ui_elements['container'].setBackground(None); self.ui_elements['container'].setPadding(0, 0, 0, 0)
+            if self.current_target == 'container' and self.overlay_delegate: self.overlay_delegate.setTarget(self.ui_elements['container'], self.mock_list, (self.plugin.get_setting("ds_cont_radius", 16) if has_cont else 0))
+            R_draw = jclass("org.telegram.messenger.R").drawable; res_id = getattr(R_draw, self.plugin.get_setting("ds_icon_res", "msg_bot"), R_draw.msg_bot); self.ui_elements['icon_req'].setImageResource(res_id); self.ui_elements['icon_opt'].setImageResource(res_id)
+            self.ui_elements['req_title'].setTextColor(jint(self.plugin.get_setting("ds_req_title_color", Theme.getColor(Theme.key_windowBackgroundWhiteBlackText)))); self.ui_elements['req_sub'].setText(self.plugin.get_setting("ds_req_sub_text", "Обязательно")); self.ui_elements['req_sub'].setTextColor(jint(self.plugin.get_setting("ds_req_sub_color", Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))))
+            self.ui_elements['opt_title'].setTextColor(jint(self.plugin.get_setting("ds_opt_title_color", Theme.getColor(Theme.key_windowBackgroundWhiteBlackText)))); self.ui_elements['opt_sub'].setText(self.plugin.get_setting("ds_opt_sub_text", "Опционально")); self.ui_elements['opt_sub'].setTextColor(jint(self.plugin.get_setting("ds_opt_sub_color", Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))))
+            req_g = self.plugin.get_setting("ds_req_gravity", 3); self.ui_elements['req_title'].setGravity(req_g); self.ui_elements['req_sub'].setGravity(req_g); self.ui_elements['tl1'].setGravity(req_g)
+            opt_g = self.plugin.get_setting("ds_opt_gravity", 3); self.ui_elements['opt_title'].setGravity(opt_g); self.ui_elements['opt_sub'].setGravity(opt_g); self.ui_elements['tl2'].setGravity(opt_g)
+            self.ui_elements['req_cb'].setColor(Theme.key_featuredStickers_addButton, Theme.key_windowBackgroundWhite, Theme.key_featuredStickers_buttonText); req_cb_scale = float(self.plugin.get_setting("ds_req_cb_scale", 1.0)); req_cb_frame = int(self.plugin.get_setting("ds_req_cb_frame", 26)); self.ui_elements['req_cb'].setScaleX(req_cb_scale); self.ui_elements['req_cb'].setScaleY(req_cb_scale); self.ui_elements['req_cb_container'].setLayoutParams(LayoutHelper.createLinear(req_cb_frame, req_cb_frame, 16))
+            self.ui_elements['opt_cb'].setColor(Theme.key_featuredStickers_addButton, Theme.key_windowBackgroundWhite, Theme.key_featuredStickers_buttonText); opt_cb_scale = float(self.plugin.get_setting("ds_opt_cb_scale", 1.0)); opt_cb_frame = int(self.plugin.get_setting("ds_opt_cb_frame", 26)); self.ui_elements['opt_cb'].setScaleX(opt_cb_scale); self.ui_elements['opt_cb'].setScaleY(opt_cb_scale); self.ui_elements['opt_cb_container'].setLayoutParams(LayoutHelper.createLinear(opt_cb_frame, opt_cb_frame, 16))
+            if self.current_target == 'req_checkbox' and self.overlay_delegate: self.overlay_delegate.setTarget(self.ui_elements['req_cb_container'], self.mock_list, 6)
+            elif self.current_target == 'opt_checkbox' and self.overlay_delegate: self.overlay_delegate.setTarget(self.ui_elements['opt_cb_container'], self.mock_list, 6)
+        except Exception as e: self.plugin.log(f"UPDATE PREVIEW ERROR: {e}")
+
+    def _open_settings_for(self, type_str):
+        if self.current_target == type_str: return
+        self.current_target = type_str; self.settings_container.animate().alpha(0.0).translationY(float(AndroidUtilities.dp(20))).setDuration(150).withEndAction(ActionRunnable(self._build_settings_panel)).start()
+
+    def _build_settings_panel(self):
+        try:
+            self.settings_container.removeAllViews()
+            if self.current_target == 'container': self._add_title("Настройки контейнера"); self._add_toggle_btn("ds_cont_enabled", True); self._add_color_picker("Цвет контейнера", "ds_cont_color", Theme.getColor(Theme.key_windowBackgroundGray)); self._add_slider("Скругление (dp)", "ds_cont_radius", 0, 32, 16)
+            elif self.current_target == 'icon': self._add_title("Иконка зависимости"); self._add_icon_selector_btn()
+            elif self.current_target == 'req_text': self._add_title("Обязательный модуль"); self._add_color_picker("Цвет заголовка", "ds_req_title_color", Theme.getColor(Theme.key_windowBackgroundWhiteBlackText)); self._add_input("Текст подписи", "ds_req_sub_text", "Обязательно"); self._add_color_picker("Цвет подписи", "ds_req_sub_color", Theme.getColor(Theme.key_windowBackgroundWhiteGrayText)); self._add_alignment_control("Выравнивание текста", "ds_req_gravity", 3)
+            elif self.current_target == 'opt_text': self._add_title("Опциональный модуль"); self._add_color_picker("Цвет заголовка", "ds_opt_title_color", Theme.getColor(Theme.key_windowBackgroundWhiteBlackText)); self._add_input("Текст подписи", "ds_opt_sub_text", "Опционально"); self._add_color_picker("Цвет подписи", "ds_opt_sub_color", Theme.getColor(Theme.key_windowBackgroundWhiteGrayText)); self._add_alignment_control("Выравнивание текста", "ds_opt_gravity", 3)
+            elif self.current_target == 'req_checkbox': self._add_title("Чекбокс (Обязательный)"); self._add_slider_float("Масштаб галочки (0.5x - 1.5x)", "ds_req_cb_scale", 0.5, 1.5, 1.0); self._add_slider("Размер рамки (dp)", "ds_req_cb_frame", 16, 50, 26)
+            elif self.current_target == 'opt_checkbox': self._add_title("Чекбокс (Опциональный)"); self._add_slider_float("Масштаб галочки (0.5x - 1.5x)", "ds_opt_cb_scale", 0.5, 1.5, 1.0); self._add_slider("Размер рамки (dp)", "ds_opt_cb_frame", 16, 50, 26)
+            elif self.current_target is None: tv = jclass("android.widget.TextView")(self.context); tv.setText("Нажмите на любой элемент выше для его настройки"); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))); tv.setGravity(17); self.settings_container.addView(tv, LayoutHelper.createLinear(-1, -2, 0, 16, 40, 16, 0))
+            self.settings_container.setTranslationY(float(AndroidUtilities.dp(20))); self.settings_container.animate().alpha(1.0).translationY(0.0).setDuration(200).setInterpolator(jclass("org.telegram.ui.Components.CubicBezierInterpolator").EASE_OUT_QUINT).start()
+        except Exception as e: self.plugin.log(f"BUILD SETTINGS ERROR: {e}")
+
+    def _add_title(self, text):
+        tv = jclass("android.widget.TextView")(self.context); tv.setText(text); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader))); tv.setTextSize(1, 14.0); tv.setTypeface(AndroidUtilities.bold()); self.settings_container.addView(tv, LayoutHelper.createLinear(-1, -2, 23, 16, 0, 16))
+
+    def _add_toggle_btn(self, key, default):
+        btn = jclass("android.widget.TextView")(self.context); btn.setGravity(17); btn.setTypeface(AndroidUtilities.bold()); btn.setTextSize(1, 14.0); btn.setPadding(0, AndroidUtilities.dp(12), 0, AndroidUtilities.dp(12))
+        def apply_state(v, is_on):
+            if is_on: v.setText("КОНТЕЙНЕР ВКЛЮЧЕН"); v.setTextColor(jint(Theme.getColor(Theme.key_featuredStickers_buttonText))); v.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(8), jint(Theme.getColor(Theme.key_featuredStickers_addButton)), jint(Color.TRANSPARENT)))
+            else: v.setText("КОНТЕЙНЕР ВЫКЛЮЧЕН"); v.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhite))); v.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(8), jint(Theme.getColor(Theme.key_text_RedBold)), jint(Color.TRANSPARENT)))
+        apply_state(btn, self.plugin.get_setting(key, default))
+        btn.setOnClickListener(OnClickProxy(lambda v: (cur := self.plugin.get_setting(key, default), ns := not cur, self.plugin.set_setting(key, ns), btn.animate().alpha(0.0).setDuration(150).withEndAction(ActionRunnable(lambda: (apply_state(btn, ns), btn.animate().alpha(1.0).setDuration(150).start()))).start(), self._update_preview_from_settings(animate=True)))); self.settings_container.addView(btn, LayoutHelper.createLinear(-1, -2, 23, 12, 23, 12))
+
+    def _add_color_picker(self, text, key, default):
+        row = LinearLayout(self.context); row.setOrientation(0); row.setGravity(16); row.setPadding(AndroidUtilities.dp(23), AndroidUtilities.dp(12), AndroidUtilities.dp(23), AndroidUtilities.dp(12))
+        tv = jclass("android.widget.TextView")(self.context); tv.setText(text); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))); tv.setTextSize(1, 16.0); row.addView(tv, LayoutHelper.createLinear(0, -2, 1.0))
+        color_circle = View(self.context); update_circle = lambda c: color_circle.setBackground(Theme.createRoundRectDrawable(AndroidUtilities.dp(15), jint(c)))
+        update_circle(self.plugin.get_setting(key, default)); row.addView(color_circle, LayoutHelper.createLinear(30, 30, 16))
+        def on_color_click(v):
+            picker = ColorPickerBottomSheet(self.context, None); picker.setPipetteDelegate(DummyPipetteDelegate())
+            picker.setColorListener(ColorConsumer(lambda c: (self.plugin.set_setting(key, c), update_circle(c), self._update_preview_from_settings(animate=False)))); picker.setColor(jint(self.plugin.get_setting(key, default))); picker.show()
+        row.setOnClickListener(OnClickProxy(on_color_click)); self.settings_container.addView(row, LayoutHelper.createLinear(-1, -2))
+
+    def _add_alignment_control(self, text, key, default):
+        row = LinearLayout(self.context); row.setOrientation(1); row.setPadding(AndroidUtilities.dp(23), AndroidUtilities.dp(10), AndroidUtilities.dp(23), AndroidUtilities.dp(10)); tv = jclass("android.widget.TextView")(self.context); tv.setText(text); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))); row.addView(tv, LayoutHelper.createLinear(-1, -2, 0, 0, 0, 8)); btn_row = LinearLayout(self.context); btn_row.setOrientation(0); buttons_refs = []
+        def on_align_click(v, g):
+            self.plugin.set_setting(key, g); self._update_preview_from_settings(animate=True)
+            for bv, bg in buttons_refs:
+                is_act = (bg == g); bv.setTextColor(jint(Theme.getColor(Theme.key_featuredStickers_buttonText if is_act else Theme.key_windowBackgroundWhiteBlueHeader))); bv.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(8), jint(Theme.getColor(Theme.key_featuredStickers_addButton) if is_act else Color.TRANSPARENT), jint(Color.TRANSPARENT)))
+        for name, g in [("Лево", 3), ("Центр", 1), ("Право", 5)]:
+            btn = jclass("android.widget.TextView")(self.context); btn.setText(name); btn.setGravity(17); btn.setPadding(0, AndroidUtilities.dp(8), 0, AndroidUtilities.dp(8)); is_act = (self.plugin.get_setting(key, default) == g); btn.setTextColor(jint(Theme.getColor(Theme.key_featuredStickers_buttonText if is_act else Theme.key_windowBackgroundWhiteBlueHeader))); btn.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(8), jint(Theme.getColor(Theme.key_featuredStickers_addButton) if is_act else Color.TRANSPARENT), jint(Color.TRANSPARENT))); btn.setOnClickListener(OnClickProxy(lambda v, g_val=g: on_align_click(v, g_val))); buttons_refs.append((btn, g)); btn_row.addView(btn, LayoutHelper.createLinear(0, -2, 1.0, 2, 0, 2, 0))
+        row.addView(btn_row, LayoutHelper.createLinear(-1, -2)); self.settings_container.addView(row)
+
+    def _style_seekbar(self, sb):
+        CSL = jclass("android.content.res.ColorStateList"); accent, inactive = jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader)), jint(Theme.getColor(Theme.key_switchTrack))
+        try: sb.setProgressTintList(CSL.valueOf(accent)); sb.setThumbTintList(CSL.valueOf(accent)); sb.setProgressBackgroundTintList(CSL.valueOf(inactive))
+        except: pass
+
+    def _create_seek_touch_proxy(self):
+        class SeekTouchProxy(dynamic_proxy(jclass("android.view.View$OnTouchListener"))):
+            def onTouch(self, v, event):
+                try:
+                    action = event.getActionMasked(); p = v.getParent()
+                    if action == 0:
+                        while p: p.requestDisallowInterceptTouchEvent(True); p = p.getParent()
+                    elif action == 1 or action == 3:
+                        while p: p.requestDisallowInterceptTouchEvent(False); p = p.getParent()
+                except: pass
+                return False
+        return SeekTouchProxy()
+
+    def _add_slider(self, text, key, min_val, max_val, default):
+        ll = LinearLayout(self.context); ll.setOrientation(1); ll.setPadding(AndroidUtilities.dp(23), AndroidUtilities.dp(10), AndroidUtilities.dp(23), AndroidUtilities.dp(10)); tv = jclass("android.widget.TextView")(self.context); val = int(self.plugin.get_setting(key, default)); tv.setText(f"{text}: {val}"); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))); ll.addView(tv); sb = SeekBar(self.context); self._style_seekbar(sb); sb.setMax(max_val - min_val); sb.setProgress(val - min_val); sb.setOnTouchListener(self._create_seek_touch_proxy())
+        sb.setOnSeekBarChangeListener(SimpleSeekListener(lambda prog: (v := prog + min_val, tv.setText(f"{text}: {v}"), self.plugin.set_setting(key, v), self._update_preview_from_settings(animate=False)))); ll.addView(sb, LayoutHelper.createLinear(-1, -2, 0, 10, 0, 0)); self.settings_container.addView(ll)
+
+    def _add_slider_float(self, text, key, min_val, max_val, default):
+        ll = LinearLayout(self.context); ll.setOrientation(1); ll.setPadding(AndroidUtilities.dp(23), AndroidUtilities.dp(10), AndroidUtilities.dp(23), AndroidUtilities.dp(10)); tv = jclass("android.widget.TextView")(self.context); val = float(self.plugin.get_setting(key, default)); tv.setText(f"{text}: {val:.2f}"); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))); ll.addView(tv); sb = SeekBar(self.context); self._style_seekbar(sb); sb.setMax(100); sb.setProgress(int((val - min_val) / (max_val - min_val) * 100)); sb.setOnTouchListener(self._create_seek_touch_proxy())
+        sb.setOnSeekBarChangeListener(SimpleSeekListener(lambda prog: (v := min_val + (max_val - min_val) * (prog / 100.0), tv.setText(f"{text}: {v:.2f}"), self.plugin.set_setting(key, v), self._update_preview_from_settings(animate=False)))); ll.addView(sb, LayoutHelper.createLinear(-1, -2, 0, 10, 0, 0)); self.settings_container.addView(ll)
+    def _add_input(self, text, key, default):
+        ll = LinearLayout(self.context); ll.setOrientation(1); ll.setPadding(AndroidUtilities.dp(23), AndroidUtilities.dp(10), AndroidUtilities.dp(23), AndroidUtilities.dp(10)); tv = jclass("android.widget.TextView")(self.context); tv.setText(text); tv.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader))); ll.addView(tv); et = EditTextBoldCursor(self.context); et.setText(self.plugin.get_setting(key, default)); et.setTextColor(jint(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))); et.addTextChangedListener(SimpleTextWatcher(lambda s: (self.plugin.set_setting(key, s), self._update_preview_from_settings(animate=False)))); ll.addView(et, LayoutHelper.createLinear(-1, -2)); self.settings_container.addView(ll)
+
+    def _add_icon_selector_btn(self):
+        btn = jclass("android.widget.TextView")(self.context); btn.setText("Выбрать иконку (Поиск)"); btn.setGravity(17); btn.setTextColor(jint(Theme.getColor(Theme.key_featuredStickers_buttonText))); btn.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(8), jint(Theme.getColor(Theme.key_featuredStickers_addButton)), jint(Color.TRANSPARENT))); btn.setPadding(0, AndroidUtilities.dp(12), 0, AndroidUtilities.dp(12))
+        btn.setOnClickListener(OnClickProxy(lambda v: self._show_icons_bottom_sheet())); self.settings_container.addView(btn, LayoutHelper.createLinear(-1, -2, 23, 16, 23, 0))
+
+    def _show_icons_bottom_sheet(self):
+        try:
+            if not UniversalFragment: return BulletinHelper.show_error("Design Studio недоступен в данной версии клиента")
+            delegate = IconSelectorDelegate(lambda name: (self.plugin.set_setting("ds_icon_res", name), self._update_preview_from_settings(animate=False))); fragment = UniversalFragment(delegate); delegate.fragment = fragment; self.base_fragment.presentFragment(fragment)
+        except Exception as e: self.plugin.log(f"ICON SHEET ERROR: {e}")
+
 class ReMeowLib(BasePlugin):
     BANNER_URL = "https://raw.githubusercontent.com/Yareks/plugins/main/banner.png"
-    _instance = None
 
     def on_plugin_load(self):
-        ReMeowLib._instance = self
-        self.api = ReMeowAPI(self)
         self._is_running = True
         if is_safe_mode(): mlog("SAFE MODE ACTIVE: ReMeow Core will not load native extensions."); return
-        mlog("Plugin initializing...")
+        mlog("Plugin initializing..."); (sys.modules.update({"ReMeow": sys.modules[self.__class__.__module__]}) if self.__class__.__module__ in sys.modules else None)
         
         loader = ReLoad.get()
-        self.banner_list = []
-        self.last_banner_path = os.path.join(loader.root, "dwd_banner.png")
-        self.last_banner_iv = None
-        self.remote_modules_cache = []
-        self.connected_modules = {} 
-
-        self._setup_hooks()
+        banner_path = os.path.join(loader.root, "dwd_banner.png")
+        threading.Thread(target=lambda: SafeDownloader.download(self.BANNER_URL, banner_path), daemon=True).start()
         
-        threading.Thread(target=self._perform_initial_check, daemon=True).start()
-        threading.Thread(target=self._start_banner_rotation, daemon=True).start()
-        threading.Thread(target=self._precache_stickers, daemon=True).start()
-        self._check_and_install_deps_ui()
-
-    def on_plugin_unload(self):
-        self._is_running = False
-        ReMeowLib._instance = None
-
-    def register_module(self, plugin_id, name, version, status="Пассивно", info="", params=None, actions=None):
-        self.connected_modules[plugin_id] = {
-            "name": name, "version": version, "status": status,
-            "info": info, "params": params or {}, "actions": actions or {}
-        }
-        mlog(f"Module Registered: {name} v{version}")
-
-    def update_module_data(self, plugin_id, **kwargs):
-        if plugin_id in self.connected_modules:
-            for k, v in kwargs.items():
-                self.connected_modules[plugin_id][k] = v
-
-    def request_library(self, lib_name, url):
-        path = os.path.join(ReLoad.get().root, f"{lib_name}.so")
-        if os.path.exists(path): return NativeLinker().load(path)
-        run_on_ui_thread(lambda: DependencyProgressSheet(jclass("org.telegram.ui.LaunchActivity").instance, {lib_name: url}, lambda: None, None).show())
-        return None
-
-    def get_banner_view(self, context):
-        iv = ImageView(context)
-        iv.setScaleType(ImageView.ScaleType.CENTER_CROP)
-        if os.path.exists(self.last_banner_path):
-            bmp = BitmapFactory.decodeFile(self.last_banner_path)
-            if bmp: iv.setImageBitmap(bmp)
-        return iv
-
-    def _setup_hooks(self):
         try:
             Class = jclass("java.lang.Class")
             try:
                 sheet_target = Class.forName("com.exteragram.messenger.plugins.ui.components.InstallPluginBottomSheet")
-                self.hook_method(sheet_target.getDeclaredConstructors()[0], InstallSheetHook(self))
-            except: pass
+                sheet_ctors = sheet_target.getDeclaredConstructors()
+                if sheet_ctors and len(sheet_ctors) > 0:
+                    self.hook_method(sheet_ctors[0], InstallSheetHook(self))
+            except Exception as ex_h1:
+                mlog(f"Hooking failed: InstallSheet {ex_h1}")
             
             try:
                 engine_target = Class.forName("com.exteragram.messenger.plugins.PythonPluginsEngine")
-                m_is_plugin = engine_target.getDeclaredMethod("isPlugin", jarray(Class)([jclass("java.io.File").getClass(), jclass("org.telegram.messenger.MessageObject").getClass()]))
-                self.hook_method(m_is_plugin, Plugin2IsPluginHook(self))
+                try:
+                    m_is_plugin = engine_target.getDeclaredMethod("isPlugin", jarray(Class)([jclass("java.io.File").getClass(), jclass("org.telegram.messenger.MessageObject").getClass()]))
+                    self.hook_method(m_is_plugin, Plugin2IsPluginHook(self))
+                except: pass
                 
-                params_target = Class.forName("com.exteragram.messenger.plugins.ui.components.InstallPluginBottomSheet$PluginInstallParams")
-                m_install = engine_target.getDeclaredMethod("showInstallDialog", jarray(Class)([jclass("org.telegram.ui.ActionBar.BaseFragment").getClass(), params_target]))
-                self.hook_method(m_install, Plugin2InstallHook(self))
+                try:
+                    params_target = Class.forName("com.exteragram.messenger.plugins.ui.components.InstallPluginBottomSheet$PluginInstallParams")
+                    m_install = engine_target.getDeclaredMethod("showInstallDialog", jarray(Class)([jclass("org.telegram.ui.ActionBar.BaseFragment").getClass(), params_target]))
+                    self.hook_method(m_install, Plugin2InstallHook(self))
+                except: pass
                 
-                m_share = engine_target.getDeclaredMethod("sharePlugin", jarray(Class)([jclass("java.lang.String").getClass()]))
-                self.hook_method(m_share, Plugin2ShareHook(self))
-            except: pass
+                try:
+                    m_share = engine_target.getDeclaredMethod("sharePlugin", jarray(Class)([jclass("java.lang.String").getClass()]))
+                    self.hook_method(m_share, Plugin2ShareHook(self))
+                except: pass
+                
+            except Exception as ex_h2:
+                mlog(f"Hooking failed: EngineHooks {ex_h2}")
+                
         except Exception as e: mlog(f"Global Hooking Error: {e}")
+        
+        self.banner_list = []
+        self.last_banner_path = ""
+        self.available_updates_cache = []
+        self.last_banner_iv = None
+        
+        self._refresh_banner_list()
+        self._check_and_install_deps_ui()
+        
+        threading.Thread(target=self._perform_initial_check, daemon=True).start()
+        threading.Thread(target=self._precache_stickers, daemon=True).start()
+        threading.Thread(target=self._start_banner_rotation, daemon=True).start()
+
+    def on_plugin_unload(self):
+        self._is_running = False
 
     def _perform_initial_check(self, silent=True):
-        mlog("Синхронизация манифеста...")
+        global _UPDATE_SHOWN_THIS_SESSION
+        mlog("ReMeow: Синхронизация манифеста...")
         try:
-            res = requests.get("https://raw.githubusercontent.com/Yareks/plugins/main/plugin.txt", timeout=15)
+            manifest_url = "https://raw.githubusercontent.com/Yareks/plugins/main/plugin.txt"
+            res = requests.get(manifest_url, timeout=15)
             if res.status_code != 200: return
+            
             lines = res.text.splitlines()
+            updates_list = []
+            
+            remote_rem_url = None
+            remote_wg_u, remote_wg_r, remote_wg_p = None, None, None
+
             for line in lines:
                 if " - " not in line: continue
                 key, val = [x.strip() for x in line.split(" - ", 1)]
-                if key == "Banner":
-                    links = [x.strip() for x in val.split(",")]
-                    for link in links:
+                
+                if key == "Lib":
+                    remote_rem_url = val
+                    if not remote_rem_url.startswith("http"):
+                        p = remote_rem_url.split("/", 2)
+                        if len(p) >= 3: remote_rem_url = f"https://raw.githubusercontent.com/{p[0]}/{p[1]}/main/{p[2]}"
+                elif key == "MeowWG":
+                    p = val.split("/")
+                    if len(p) >= 3: remote_wg_u, remote_wg_r, remote_wg_p = p[0], p[1], "/".join(p[2:])
+                elif key == "Banner":
+                    banner_links = [x.strip() for x in val.split(",")]
+                    for link in banner_links:
                         p = link.split("/", 2)
                         if len(p) >= 3:
-                            raw = f"https://raw.githubusercontent.com/{p[0]}/{p[1]}/main/{p[2]}"
-                            dest = os.path.join(ReLoad.get().root, p[2].split("/")[-1])
-                            if not os.path.exists(dest): SafeDownloader.download(raw, dest)
-                elif key == "Modules":
-                    self.remote_modules_cache = [x.strip() for x in val.split(",")]
-            self._refresh_banner_list()
-        except: pass
+                            url = f"https://raw.githubusercontent.com/{p[0]}/{p[1]}/main/{p[2]}"
+                            filename = p[2].split("/")[-1]
+                            dest = os.path.join(ReLoad.get().root, filename)
+                            if not os.path.exists(dest):
+                                threading.Thread(target=SafeDownloader.download, args=(url, dest), daemon=True).start()
+                    self._refresh_banner_list()
 
-    def _refresh_banner_list(self):
-        loader = ReLoad.get()
-        if not os.path.exists(loader.root): return
-        banners = [os.path.join(loader.root, f) for f in os.listdir(loader.root) if f.lower().endswith('.png')]
-        if not banners:
-            default_path = os.path.join(loader.root, "dwd_banner.png")
-            if not os.path.exists(default_path): SafeDownloader.download(self.BANNER_URL, default_path)
-            if os.path.exists(default_path): banners.append(default_path)
-        self.banner_list = banners
+            if remote_rem_url:
+                try:
+                    r_res = requests.get(remote_rem_url, timeout=10)
+                    if r_res.status_code == 200:
+                        m = re.search(r'__version__\s*=\s*"(.*?)"', r_res.text)
+                        if m:
+                            remote_rem_ver = m.group(1)
+                            if remote_rem_ver != __version__:
+                                updates_list.append({
+                                    'id': 'remeow', 'name': 'ReMeow Lib', 'old': __version__, 'new': remote_rem_ver,
+                                    'icon_str': 'Plugin2/1', 'url': remote_rem_url
+                                })
+                except: pass
+
+            if remote_wg_u:
+                try:
+                    PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
+                    wg_p = PC.plugins.get("MeowWG")
+                    local_wg_v = str(wg_p.getVersion()) if wg_p else "0.0.0"
+                    
+                    raw_wg = f"https://raw.githubusercontent.com/{remote_wg_u}/{remote_wg_r}/main/{remote_wg_p}"
+                    wg_res = requests.get(raw_wg, timeout=10)
+                    if wg_res.status_code == 200:
+                        m = re.search(r'__version__\s*=\s*"(.*?)"', wg_res.text)
+                        if m:
+                            remote_wg_ver = m.group(1)
+                            if remote_wg_ver != local_wg_v:
+                                updates_list.append({
+                                    'id': 'meowwg', 'name': 'MeowWG', 'old': local_wg_v, 'new': remote_wg_ver,
+                                    'icon_str': 'Plugin2/0', 'u': remote_wg_u, 'r': remote_wg_r, 'p': remote_wg_p
+                                })
+                except: pass
+
+            self.available_updates_cache = updates_list
+
+            if updates_list and (not silent or not _UPDATE_SHOWN_THIS_SESSION):
+                def show_sheet():
+                    act = jclass("org.telegram.ui.LaunchActivity").instance
+                    if not act:
+                        frag = get_last_fragment()
+                        if frag: act = frag.getParentActivity()
+                    if act: UpdateNotificationSheet(act, updates_list, self._execute_updates).show()
+                run_on_ui_thread(show_sheet)
+
+        except Exception as e: mlog(f"Check update error: {e}")
+
+    def _execute_updates(self):
+        BulletinHelper.show_info("Запуск процесса обновления...")
+        for upd in self.available_updates_cache:
+            if upd['id'] == 'remeow':
+                threading.Thread(target=self._update_self, args=(upd['url'],), daemon=True).start()
+            elif upd['id'] == 'meowwg':
+                threading.Thread(target=self._gh_start_download, args=(upd['u'], upd['r'], upd['p'], "ReMeow_Companion"), kwargs={'enable_after': True}, daemon=True).start()
+
+    def _update_self(self, url):
+        try:
+            tmp = os.path.join(ReLoad.get().root, "rem_upd.tmp")
+            if not SafeDownloader.download(url, tmp): return
+            
+            my_path = self._find_self_path(__id__)
+            if not my_path: 
+                mlog("Update failed: Path to self not found!")
+                return
+            
+            try:
+                shutil.copyfile(tmp, my_path)
+            except PermissionError:
+                with open(tmp, 'rb') as src, open(my_path, 'wb') as dst:
+                    dst.write(src.read())
+            
+            if os.path.exists(tmp): os.remove(tmp)
+            run_on_ui_thread(lambda: BulletinHelper.show_success("ReMeow обновлен! Перезапустите приложение."))
+        except Exception as e: 
+            mlog(f"Self update error: {e}")
+            run_on_ui_thread(lambda: BulletinHelper.show_error("Ошибка обновления! См. логи."))
+
+    def _find_self_path(self, plugin_id):
+        try:
+            PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
+            engine = PC.engines.get("python")
+            if engine:
+                path = engine.getPluginPath(plugin_id)
+                if path: return str(path)
+
+            ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
+            search_dirs = [
+                os.path.join(str(ctx.getFilesDir()), "plugins"),
+                os.path.join(str(ctx.getFilesDir()), "AyuGram Files"),
+                "/storage/emulated/0/Android/data/" + str(ctx.getPackageName()) + "/files/Exteragram Files/",
+            ]
+            
+            for base_dir in search_dirs:
+                if os.path.exists(base_dir):
+                    for f in os.listdir(base_dir):
+                        if f.endswith(".plugin") or f.endswith(".py"):
+                            f_p = os.path.join(base_dir, f)
+                            with open(f_p, 'r', encoding='utf-8', errors='ignore') as pf:
+                                head = pf.read(1024)
+                                if f'__id__ = "{plugin_id}"' in head or f'__id__="{plugin_id}"' in head:
+                                    return f_p
+        except Exception as e: mlog(f"Self-path search error: {e}")
+        return None
+
+    def _gh_start_download(self, user, repo, path, folder_name, branch="main", enable_after=False) -> bool:
+        clean_path = path
+        if clean_path.startswith(f"{user}/{repo}/"):
+            clean_path = clean_path[len(f"{user}/{repo}/"):]
+            
+        raw_url = f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{clean_path}"
+        dest_dir = os.path.join(str(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()), folder_name)
+        if not os.path.exists(dest_dir): os.makedirs(dest_dir)
+        dest = os.path.join(dest_dir, clean_path.split("/")[-1])
+        
+        success = SafeDownloader.download(raw_url, dest)
+        if not success and branch == "main":
+            return self._gh_start_download(user, repo, clean_path, folder_name, branch="master", enable_after=enable_after)
+        if success:
+            run_on_ui_thread(lambda: BulletinHelper.show_success(f"Загружено в Downloads/{folder_name}"))
+            if dest.lower().endswith(".plugin"):
+                try:
+                    PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
+                    engine = PC.engines.get("python")
+                    if engine:
+                        class EnableCallback(dynamic_proxy(jclass("org.telegram.messenger.Utilities$Callback"))):
+                            def __init__(self, plugin_id):
+                                super().__init__()
+                                self.plugin_id = plugin_id
+                            def run(self, error):
+                                if not error and enable_after:
+                                    def enable_plugin():
+                                        time.sleep(1.5)
+                                        PC.setPluginEnabled(self.plugin_id, True, None)
+                                    threading.Thread(target=enable_plugin, daemon=True).start()
+                        engine.loadPluginFromFile(dest, None, EnableCallback("MeowWG"))
+                except: pass
+        return success
 
     def _start_banner_rotation(self):
-        self._refresh_banner_list()
         while self._is_running:
             time.sleep(11)
-            if len(self.banner_list) < 2: continue
-            cand = [p for p in self.banner_list if p != self.last_banner_path and os.path.exists(p)]
-            if cand:
-                self.last_banner_path = random.choice(cand)
-                self._apply_banner_with_fade(self.last_banner_path)
+            self._refresh_banner_list()
+            valid_banners = [p for p in self.banner_list if p and os.path.exists(p)]
+            if len(valid_banners) < 2:
+                continue
+            candidates = [p for p in valid_banners if p != self.last_banner_path]
+            new_banner = random.choice(candidates)
+            self.last_banner_path = new_banner
+            self._apply_banner_with_fade(new_banner)
 
     def _apply_banner_with_fade(self, path):
         if not hasattr(self, 'last_banner_iv') or self.last_banner_iv is None:
-            self.last_banner_path = path; return
+            self.last_banner_path = path
+            return
+
         def _task():
             try:
                 if not os.path.exists(path): return
@@ -1806,43 +1963,163 @@ class ReMeowLib(BasePlugin):
                 if not bmp: return
                 iv = self.last_banner_iv
                 iv.animate().alpha(0.0).setDuration(600).withEndAction(ActionRunnable(lambda: (
-                    iv.setImageBitmap(bmp), iv.animate().alpha(1.0).setDuration(600).start()
+                    iv.setImageBitmap(bmp),
+                    iv.animate().alpha(1.0).setDuration(600).start()
                 ))).start()
-            except: pass
+            except Exception as e:
+                mlog(f"Banner fade error: {e}")
         run_on_ui_thread(_task)
 
-    def _get_settings_banner(self):
-        ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
-        if not hasattr(self, 'last_banner_path') or not self.last_banner_path:
-            self._refresh_banner_list()
-            self.last_banner_path = self.banner_list[0] if self.banner_list and os.path.exists(self.banner_list[0]) else os.path.join(ReLoad.get().root, "dwd_banner.png")
-        container = FrameLayout(ctx)
-        self.last_banner_iv = ImageView(ctx)
-        self.last_banner_iv.setScaleType(ImageView.ScaleType.CENTER_CROP)
-        if os.path.exists(self.last_banner_path):
-            bmp = BitmapFactory.decodeFile(self.last_banner_path)
-            if bmp: self.last_banner_iv.setImageBitmap(bmp)
-            else: self.last_banner_iv.setBackgroundColor(0xFF222222)
-        else: self.last_banner_iv.setBackgroundColor(0xFF222222)
-        container.addView(self.last_banner_iv, LayoutHelper.createFrame(-1, 160))
-        return container
+    def _refresh_banner_list(self):
+        try:
+            loader = ReLoad.get()
+            banner_dir = loader.root
+            if not os.path.exists(banner_dir): return
+            banners = [os.path.join(banner_dir, f) for f in os.listdir(banner_dir)
+                       if f.lower().endswith('.png') and os.path.isfile(os.path.join(banner_dir, f))]
+            if not banners:
+                default_path = os.path.join(banner_dir, "dwd_banner.png")
+                if os.path.exists(default_path): banners.append(default_path)
+            self.banner_list = banners
+        except Exception as e:
+            mlog(f"Refresh banner list error: {e}")
+
+    def download_from_github(self, user, repo, path, folder_name, branch="main", callback=None):
+        def _task(): success = self._gh_start_download(user, repo, path, folder_name, branch); (callback(success) if callback else None)
+        run_on_queue(_task)
 
     def _check_and_install_deps_ui(self):
         site_pkgs = RePip.get_dirs()[1]
-        if site_pkgs not in sys.path: sys.path.insert(0, site_pkgs)
+        (sys.path.insert(0, site_pkgs) if site_pkgs not in sys.path else None)
         try: RePip.fix_cffi_backend(); import cffi; _CFFI_READY.set()
-        except:
-            _CFFI_READY.clear()
-            def wait_and_show():
-                act = None
-                for _ in range(20):
-                    try: act = jclass("org.telegram.ui.LaunchActivity").instance
-                    except: pass
-                    if act: break
-                    time.sleep(0.5)
-                if act: run_on_ui_thread(lambda: CoreInstallerSheet(act).show())
-                else: threading.Timer(10.0, _CFFI_READY.set).start()
-            threading.Thread(target=wait_and_show).start()
+        except: _CFFI_READY.clear(); threading.Thread(target=self._wait_and_show_installer).start()
+
+    def _wait_and_show_installer(self):
+        act = None
+        for _ in range(20):
+            try: (act := jclass("org.telegram.ui.LaunchActivity").instance)
+            except: pass
+            if act: break
+            time.sleep(0.5)
+        (run_on_ui_thread(lambda: CoreInstallerSheet(act).show()) if act else threading.Timer(10.0, _CFFI_READY.set).start())
+
+    def _get_banner_view(self):
+        ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
+        loader = ReLoad.get()
+        if not hasattr(self, 'last_banner_path') or not self.last_banner_path:
+            self._refresh_banner_list()
+            if self.banner_list and os.path.exists(self.banner_list[0]):
+                self.last_banner_path = self.banner_list[0]
+            else:
+                self.last_banner_path = os.path.join(loader.root, "dwd_banner.png")
+        container = FrameLayout(ctx)
+        iv = ImageView(ctx)
+        iv.setScaleType(ImageView.ScaleType.CENTER_CROP)
+        self.last_banner_iv = iv
+        if os.path.exists(self.last_banner_path):
+            bmp = BitmapFactory.decodeFile(self.last_banner_path)
+            if bmp: iv.setImageBitmap(bmp)
+            else: iv.setBackgroundColor(0xFF222222)
+        else: iv.setBackgroundColor(0xFF222222)
+        container.addView(iv, LayoutHelper.createFrame(-1, 160))
+        return container
+
+    def create_settings(self):
+        return [
+            Custom(view=self._get_banner_view()), 
+            Header(text=f"ReMeow Core v{__version__}"), 
+            Text(text="Список модулей", icon="msg_bot", subtext="Интегрированные плагины", on_click=lambda v: run_on_ui_thread(lambda: get_last_fragment().presentFragment(UniversalFragment(ModuleListDelegate(self))))),
+            Text(text="Дизайн", icon="msg_palette", create_sub_fragment=self._design_sub_page), 
+            Header(text="Синхронизация"),
+            Text(text="Проверить обновления", icon="msg_download", on_click=lambda v: threading.Thread(target=self._perform_initial_check, args=(False,), daemon=True).start()),
+            Header(text="Дополнительно"), 
+            Text(text="Управление ядром & Очистка", icon="msg_settings", create_sub_fragment=self._modules_sub_page),
+            Text(text="Справка разработчика & API", icon="msg_help", create_sub_fragment=self._others_sub_page), 
+            Divider()
+        ]
+
+    def _others_sub_page(self):
+        doc_snippet = """# ReMeow Module API Guide
+
+1. ИНИЦИАЛИЗАЦИЯ
+Всегда вызывайте ReMeowCore.initialize(self) в on_plugin_load.
+Чтобы ReMeow зарегистрировал вас как модуль:
+rem = sys.modules.get('ReMeow')
+rem.ReMeowCore.register_module(self, name="MyModule", version="1.0", status="Работаю", ui_provider=self.get_remeow_ui)
+
+2. GITHUB & ЗАГРУЗКИ
+Вы можете использовать ReMeow для скачивания файлов/плагинов:
+rem.download_from_github('User', 'Repo', 'path/file.plugin', 'FolderInDownloads')
+Файл будет сохранен в папку 'FolderInDownloads' внутри Downloads.
+
+3. КАСТОМНЫЙ БАННЕР
+Если хотите добавить свой баннер в ротацию ReMeow:
+# Скачайте PNG файл в ReLoad.get().root и ReMeow подхватит его автоматически.
+
+4. UI & ВЗАИМОДЕЙСТВИЕ
+В ui_provider (get_remeow_ui) возвращайте список элементов настроек:
+def get_remeow_ui(self):
+    return [Header(text="Настройки модуля"), Switch(...)]
+
+5. ОБНОВЛЕНИЕ СТАТУСА
+Вы можете менять статус динамически:
+rem.ReMeowCore.update_module_status(self, "Загрузка данных...")
+"""
+        return [
+            Header(text="Справка разработчика"), 
+            Custom(view=self._get_doc_view(doc_snippet)),
+            Header(text="Тест GitHub API"),
+            Input(key="api_gh_full_path", text="Путь (User/Repo/Branch/File)", default=""),
+            Input(key="api_gh_folder", text="Папка назначения", default="ReMeow_Downloads"),
+            Text(text="Начать загрузку", icon="msg_download", on_click=self._manual_gh_dl),
+            Divider()
+        ]
+
+    def _manual_gh_dl(self, v):
+        full_path = self.get_setting("api_gh_full_path", "")
+        folder = self.get_setting("api_gh_folder", "ReMeow_Downloads")
+        if "/" not in full_path: return BulletinHelper.show_error("Неверный путь!")
+        parts = full_path.split("/", 3)
+        if len(parts) < 3: return BulletinHelper.show_error("Укажите как минимум User/Repo/File")
+        u, r = parts[0], parts[1]
+        b, p = (parts[2], parts[3]) if len(parts) == 4 else ("main", parts[2])
+        BulletinHelper.show_info("Загрузка...")
+        self.download_from_github(u, r, p, folder, b)
+
+    def _get_doc_view(self, text):
+        ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
+        root = LinearLayout(ctx); root.setOrientation(1); root.setPadding(AndroidUtilities.dp(16), AndroidUtilities.dp(8), AndroidUtilities.dp(16), AndroidUtilities.dp(8))
+        badge = LinearLayout(ctx); badge.setOrientation(0); badge.setGravity(17)
+        badge.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(12), ColorUtils.blendARGB(Theme.getColor(Theme.key_windowBackgroundWhite), Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader), 0.1), ColorUtils.blendARGB(Theme.getColor(Theme.key_windowBackgroundWhite), Theme.getColor(Theme.key_windowBackgroundWhiteBlackText), 0.1)))
+        badge.setPadding(AndroidUtilities.dp(12), AndroidUtilities.dp(8), AndroidUtilities.dp(12), AndroidUtilities.dp(8))
+        t = jclass("android.widget.TextView")(ctx); t.setText("ИНСТРУКЦИЯ API"); t.setTypeface(AndroidUtilities.bold()); t.setTextSize(1, 12.0); t.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader))
+        badge.addView(t); wrapper = LinearLayout(ctx); wrapper.setOrientation(1); wrapper.setVisibility(8); wrapper.setPadding(0, AndroidUtilities.dp(10), 0, AndroidUtilities.dp(10))
+        content = jclass("android.widget.TextView")(ctx); content.setText(text); content.setTextSize(1, 12.0); content.setTypeface(jclass("android.graphics.Typeface").MONOSPACE); content.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
+        content.setBackground(Theme.createRoundRectDrawable(AndroidUtilities.dp(8), Theme.getColor(Theme.key_windowBackgroundGray))); content.setPadding(AndroidUtilities.dp(12), AndroidUtilities.dp(12), AndroidUtilities.dp(12), AndroidUtilities.dp(12))
+        content.setOnLongClickListener(OnLongClickProxy(lambda v: (AndroidUtilities.addToClipboard(text), BulletinHelper.show_success("API Гайд скопирован!"), True)[2]))
+        wrapper.addView(content); root.addView(badge); root.addView(wrapper)
+        badge.setOnClickListener(OnClickProxy(lambda v: (wrapper.setVisibility(8 if wrapper.getVisibility() == 0 else 0))))
+        return root
+
+    def _modules_sub_page(self):
+        kill = lambda v: (jclass("org.telegram.ui.LaunchActivity").instance.finishAffinity() if jclass("org.telegram.ui.LaunchActivity").instance else None, jclass("java.lang.System").exit(0))
+        def clear(v):
+            root = ReLoad.get().root; (shutil.rmtree(root) if os.path.exists(root) else None); os.makedirs(root); BulletinHelper.show_success("Очищено! Перезапустите приложение.")
+        return [
+            Header(text="Управление процессом"), 
+            Text(text="Перезапустить приложение", icon="msg_settings", red=True, on_click=kill),
+            Header(text="Очистка"),
+            Text(text="Очистить все данные ReMeow", icon="msg_delete", red=True, on_click=clear)
+        ]
+
+    def _design_sub_page(self):
+        v_box, sync = [None], threading.Event()
+        def build():
+            frag = get_last_fragment(); ctx = frag.getParentActivity() if frag else None
+            if ctx: v_box[0] = DesignStudioController(ctx, self, frag).get_view()
+            sync.set()
+        run_on_ui_thread(build); sync.wait(3.0)
+        return ([Custom(view=v_box[0])] if v_box[0] else [Text(text="Ошибка загрузки Design Studio", red=True)])
 
     def _precache_stickers(self):
         try:
@@ -1851,216 +2128,123 @@ class ReMeowLib(BasePlugin):
             CM.getInstance(UC.selectedAccount).sendRequest(req, None)
         except: pass
 
-    def _gh_start_download(self, user, repo, path, folder_name, branch="main", enable_after=False):
-        clean_path = path[len(f"{user}/{repo}/"):] if path.startswith(f"{user}/{repo}/") else path
-        raw_url = f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{clean_path}"
-        dest_dir = os.path.join(str(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()), folder_name)
-        if not os.path.exists(dest_dir): os.makedirs(dest_dir)
-        dest = os.path.join(dest_dir, clean_path.split("/")[-1])
+    def on_send_message_hook(self, account, params):
+        return HookResult()
+
+class ModuleListDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
+    def __init__(self, rem_plugin):
+        super().__init__()
+        self.rem_plugin = rem_plugin
+        self.adapter = None
+        self._refresh_running = False
+
+    def getTitle(self): return "Модули ReMeow"
+    def fillItems(self, items, adapter):
+        self.adapter = adapter
+        loader = ReLoad.get()
+        java_add(items, Header(text="Список активных модулей"))
+        if not loader.registered_modules:
+            java_add(items, Text(text="Нет активных модулей", red=True))
+            return
         
-        if SafeDownloader.download(raw_url, dest):
-            run_on_ui_thread(lambda: BulletinHelper.show_success(f"Загружено: Downloads/{folder_name}"))
-            if dest.lower().endswith(".plugin"):
-                try:
-                    PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
-                    engine = PC.engines.get("python")
-                    if engine:
-                        class EnableCB(dynamic_proxy(jclass("org.telegram.messenger.Utilities$Callback"))):
-                            def __init__(self, p_id): super().__init__(); self.p_id = p_id
-                            def run(self, err):
-                                if not err and enable_after: threading.Thread(target=lambda: (time.sleep(1.5), PC.setPluginEnabled(self.p_id, True, None)), daemon=True).start()
-                        engine.loadPluginFromFile(dest, None, EnableCB(clean_path.split("/")[-1].replace(".plugin","")))
-                except: pass
-        elif branch == "main": self._gh_start_download(user, repo, clean_path, folder_name, "master", enable_after)
+        for pid, data in loader.registered_modules.items():
+            status_text = f"{data['status']} | v{data['ver']}"
+            java_add(items, Text(
+                text=data['name'], 
+                subtext=status_text,
+                on_click=lambda v, p=pid: run_on_ui_thread(lambda: get_last_fragment().presentFragment(UniversalFragment(ModuleDetailsDelegate(p)))),
+                on_long_click=lambda v, p=pid, n=data['name']: self._on_delete_module(p, n)
+            ))
 
-    def create_settings(self):
-        return [
-            Custom(view=self._get_settings_banner()), 
-            Header(text=f"ReMeow Core v{__version__}"), 
-            Text(text="Модули", icon="msg_settings", create_sub_fragment=self._modules_sub_page), 
-            Text(text="Дизайн", icon="msg_palette", create_sub_fragment=self._design_sub_page), 
-            Header(text="Синхронизация"),
-            Text(text="Проверить обновления", icon="msg_download", on_click=lambda v: threading.Thread(target=self._perform_initial_check, args=(False,), daemon=True).start()),
-            Header(text="Дополнительно"), 
-            Text(text="Управление & API", icon="msg_help", create_sub_fragment=self._others_sub_page), 
-            Divider()
-        ]
-
-    def _modules_sub_page(self):
-        def show_clear_alert(v):
-            ctx = jclass("org.telegram.ui.LaunchActivity").instance
-            if not ctx: return
-            b = AlertDialog.Builder(ctx)
-            b.setTitle("Очистка").setMessage("Вы уверены, что хотите удалить все скачанные ядра, модули и настройки из системы? Приложение будет закрыто.")
-            b.setPositiveButton("Да", DialogClickProxy(lambda: (shutil.rmtree(ReLoad.get().root, ignore_errors=True), jclass("java.lang.System").exit(0))))
-            b.setNegativeButton("Отмена", DialogClickProxy(lambda: None)).show()
-
-        def open_finder(v):
-            if not UniversalFragment: 
-                run_on_ui_thread(lambda: BulletinHelper.show_error("Магазин недоступен в этой версии"))
-                return
-            get_last_fragment().presentFragment(UniversalFragment(RemoteModulesDelegate(self)))
-
-        items = [
-            Header(text="Управление"),
-            Text(text="Найти модули", icon="msg_search", on_click=open_finder),
-            Text(text="Очистить ядро", icon="msg_delete", red=True, on_click=show_clear_alert),
-            Header(text="Активные модули (Зажать для удаления)")
-        ]
+    def _on_delete_module(self, p_id, name):
+        def perform_del():
+            try:
+                PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
+                PC.setPluginEnabled(p_id, False, None)
+                path = self.rem_plugin._find_self_path(p_id)
+                if path and os.path.exists(path):
+                    os.remove(path)
+                loader = ReLoad.get()
+                if p_id in loader.registered_modules:
+                    del loader.registered_modules[p_id]
+                run_on_ui_thread(lambda: (self.adapter.update(True) if self.adapter else None, BulletinHelper.show_success(f"Модуль {name} полностью удален.")))
+            except Exception as e:
+                mlog(f"Delete error: {e}")
         
-        if not self.connected_modules: 
-            items.append(Text(text="Список пуст", icon="msg_info"))
-        else:
-            for pid, meta in self.connected_modules.items():
-                items.append(Text(
-                    text=meta['name'], subtext=f"v{meta['version']} | {meta['status']}",
-                    icon="msg_bot", 
-                    on_click=lambda v, p=pid: self._open_module_details(p),
-                    on_long_click=lambda v, p=pid: self._show_delete_alert(p)
-                ))
-        return items
-
-    def _show_delete_alert(self, pid):
-        ctx = jclass("org.telegram.ui.LaunchActivity").instance
-        if not ctx: 
-            return False  # важно: long click должен вернуть False, если не обработан
-        b = AlertDialog.Builder(ctx)
-        b.setTitle("Удаление").setMessage("Удалить этот плагин из системы?")
-        b.setPositiveButton("Да", DialogClickProxy(lambda: self._do_delete(pid)))
-        b.setNegativeButton("Нет", DialogClickProxy(lambda: None)).show()
+        AlertDialog.Builder(jclass("org.telegram.ui.LaunchActivity").instance) \
+            .setTitle("Полное удаление") \
+            .setMessage(f"Вы уверены, что хотите удалить файл плагина и все данные модуля {name}?") \
+            .setPositiveButton("Удалить", ActionRunnable(perform_del)) \
+            .setNegativeButton("Отмена", None).show()
         return True
 
-    def _do_delete(self, pid):
-        try:
-            PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
-            if PC.plugins.containsKey(pid):
-                PC.deletePlugin(pid)
-                self.connected_modules.pop(pid, None)
-                run_on_ui_thread(lambda: BulletinHelper.show_success("Модуль удален."))
-                frag = get_last_fragment()
-                if frag and "SettingsFragment" in str(frag.getClass().getSimpleName()):
-                    frag.finishFragment()
-            else:
-                run_on_ui_thread(lambda: BulletinHelper.show_error("Плагин не найден."))
-        except Exception as e: 
-            mlog(f"Delete error: {e}")
-            run_on_ui_thread(lambda: BulletinHelper.show_error("Ошибка при удалении."))
+    def onFragmentCreate(self):
+        self._refresh_running = True
+        threading.Thread(target=self._refresh_loop, daemon=True).start()
 
-    def _others_sub_page(self):
-        doc = (
-            "======== ДОКУМЕНТАЦИЯ ПО ReMeow API ========\n\n"
-            "Структура плагина: Модуль должен наследовать \n"
-            "BasePlugin (или схожий) и иметь __id__, __name__,\n"
-            "__version__, __description__. Для загрузки \n"
-            "своих .so или py-модулей укажите в начале файла:\n"
-            "__ReqRements__ = {'my_module': 'https://link_to_file'}\n\n"
-            "---- 1. ИНИЦИАЛИЗАЦИЯ (ОБЯЗАТЕЛЬНО) ----\n"
-            "В методе on_plugin_load(self) ВАШЕГО плагина:\n\n"
-            "import sys\n"
-            "remeow = sys.modules.get('ReMeow')\n"
-            "if remeow:\n"
-            "    remeow.ReMeowCore.initialize(self)\n\n"
-            "Для использования хаба (появление вашего плагина\n"
-            "в списке модулей ReMeow):\n"
-            "    api = remeow.api\n"
-            "    api.register(\n"
-            "        pid=__id__,\n"
-            "        name=__name__,\n"
-            "        version=__version__,\n"
-            "        status='Загружен',\n"
-            "        info='Ваше описание',\n"
-            "        actions={'Нажми меня': lambda: log('Click')},\n"
-            "        params={\n"
-            "            'Моя настройка': {'type': 'switch', 'value': True, 'on_change': lambda v: log(v)}\n"
-            "        }\n"
-            "    )\n\n"
-            "---- 2. ДИНАМИЧЕСКИЕ ОБНОВЛЕНИЯ ----\n"
-            "Если статус изменился, просто вызовите:\n"
-            "api.update(__id__, status='Ошибка сети', info='Недоступно')\n\n"
-            "---- 3. БАННЕРЫ В ВАШИХ НАСТРОЙКАХ ----\n"
-            "В create_settings(self) можно добавить баннер ядра:\n"
-            "return [ Custom(view=api.get_banner_view(context)) ]\n\n"
-            "---- 4. ОБМЕН ДАННЫМИ ----\n"
-            "api.set_data('my_token', '12345')\n"
-            "token = api.get_data('my_token')\n\n"
-            "---- 5. РАБОТА С GITHUB И PIP ----\n"
-            "Скачивание с GitHub: api.download_github('User/Repo/Branch/File.py')\n"
-            "Установка пакета: api.install_pip_package('requests', 'url_to_wheel')\n\n"
-            "---- 6. ОБХОД W^X В NATIVE ----\n"
-            "NativeLinker загружает файлы напрямую через android_dlopen_ext."
-        )
-        def start_gh_dl(v):
-            p = self.get_setting("api_gh_full_path", "")
-            if "/" not in p: return run_on_ui_thread(lambda: BulletinHelper.show_error("Неверный путь!"))
-            self.api.download_github(p)
+    def onFragmentDestroy(self):
+        self._refresh_running = False
 
-        return [
-            Header(text="Система"), Text(text="Убить процесс", icon="msg_settings", red=True, on_click=lambda v: jclass("java.lang.System").exit(0)),
-            Header(text="GitHub API Loader"), Input(key="api_gh_full_path", text="User/Repo/Branch/File", default=""),
-            Text(text="Загрузить (в Downloads)", icon="msg_download", on_click=start_gh_dl),
-            Header(text="Справка разработчика"), Custom(view=self._get_doc_view(doc))
-        ]
+    def _refresh_loop(self):
+        while self._refresh_running:
+            time.sleep(1.2)
+            if self.adapter:
+                run_on_ui_thread(lambda: self.adapter.update(True))
 
-    def _get_doc_view(self, text):
-        ctx = jclass("org.telegram.messenger.ApplicationLoader").applicationContext
-        root = LinearLayout(ctx); root.setOrientation(1); root.setPadding(AndroidUtilities.dp(16), 8, AndroidUtilities.dp(16), 8)
-        badge = TextView(ctx); badge.setText("Справочник API (Клик)"); badge.setTypeface(AndroidUtilities.bold()); badge.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueHeader)); badge.setPadding(0, 16, 0, 16)
-        badge.setBackground(Theme.getSelectorDrawable(False))
-        wrapper = LinearLayout(ctx); wrapper.setOrientation(1); wrapper.setVisibility(8)
-        content = TextView(ctx); content.setText(text); content.setTextSize(1, 12); content.setTypeface(jclass("android.graphics.Typeface").MONOSPACE); content.setBackground(Theme.createRoundRectDrawable(8, Theme.getColor(Theme.key_windowBackgroundGray))); content.setPadding(24, 24, 24, 24)
-        content.setOnLongClickListener(OnLongClickProxy(lambda v: (AndroidUtilities.addToClipboard(text), run_on_ui_thread(lambda: BulletinHelper.show_success("Код скопирован!")), True)[2]))
+    def onBackPressed(self): return None
+    def onMenuItemClick(self, id): pass
+    def onClick(self, item, view, position, x, y): pass
+    def onLongClick(self, item, view, position, x, y): return False
+    def beforeCreateView(self): return None
+    def afterCreateView(self, view): pass
+
+class ModuleDetailsDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
+    def __init__(self, pid):
+        super().__init__()
+        self.pid = pid
+        self.data = ReLoad.get().registered_modules.get(pid, {})
+        self.adapter = None
+        self._refresh_running = False
         
-        def toggle(v):
-            is_hidden = wrapper.getVisibility() == 8
-            wrapper.setVisibility(0 if is_hidden else 8)
-            p = root.getParent()
-            while p:
-                try: p.requestLayout()
-                except: pass
-                p = p.getParent()
+    def getTitle(self): return self.data.get("name", "Модуль")
+    def fillItems(self, items, adapter):
+        self.adapter = adapter
+        if not self.data:
+            java_add(items, Header(text="Данные не найдены"))
+            return
+            
+        java_add(items, Header(text="Информация о модуле"))
+        java_add(items, Text(text="Версия", subtext=self.data['ver']))
+        java_add(items, Text(text="Статус", subtext=self.data['status']))
         
-        badge.setOnClickListener(OnClickProxy(toggle))
-        wrapper.addView(content); root.addView(badge); root.addView(wrapper)
-        return root
+        ui_cb = self.data.get("ui_cb")
+        if ui_cb and callable(ui_cb):
+            try:
+                module_items = ui_cb()
+                if module_items:
+                    java_add(items, Header(text="Настройки модуля"))
+                    for i in module_items: 
+                        java_add(items, i)
+            except Exception as e:
+                mlog(f"Module UI provider error ({self.pid}): {e}")
+                java_add(items, Text(text="Ошибка загрузки настроек", red=True))
 
-    def _design_sub_page(self):
-        v_box, sync = [None], threading.Event()
-        def build():
-            frag = get_last_fragment()
-            if frag: v_box[0] = DesignStudioController(frag.getParentActivity(), self, frag).get_view()
-            sync.set()
-        run_on_ui_thread(build); sync.wait(3.0)
-        return [Custom(view=v_box[0])] if v_box[0] else []
+    def onFragmentCreate(self):
+        self._refresh_running = True
+        threading.Thread(target=self._refresh_loop, daemon=True).start()
 
-class RemoteModulesDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
-    def __init__(self, core): super().__init__(); self.core = core
-    def getTitle(self): return "Магазин модулей"
-    def afterCreateView(self, view):
-        ctx = view.getContext(); root = LinearLayout(ctx); root.setOrientation(1); root.setPadding(32, 32, 32, 32)
-        if not self.core.remote_modules_cache:
-            t = TextView(ctx); t.setText("Список модулей пуст или не загрузился."); t.setGravity(17); root.addView(t)
-        else:
-            PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
-            for path in self.core.remote_modules_cache:
-                name = path.split("/")[-1]
-                exists = PC.plugins.containsKey(name.replace(".plugin", "").replace(".py", ""))
-                
-                row = LinearLayout(ctx); row.setPadding(0, 16, 0, 16); row.setGravity(16)
-                t = TextView(ctx); t.setText(f"📦 {name}"); t.setTextSize(1, 16); t.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText))
-                row.addView(t, LayoutHelper.createLinear(0, -2, 1.0))
-                
-                btn = TextView(ctx); btn.setPadding(16, 8, 16, 8)
-                if exists:
-                    btn.setText("ЕСТЬ ✅"); btn.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText))
-                    row.setOnClickListener(OnClickProxy(lambda v: BulletinHelper.show_info("Уже установлено!")))
-                else:
-                    btn.setText("СКАЧАТЬ 📥"); btn.setTextSize(1, 12); btn.setTextColor(Theme.getColor(Theme.key_featuredStickers_buttonText))
-                    btn.setBackground(Theme.createSimpleSelectorRoundRectDrawable(AndroidUtilities.dp(8), Theme.getColor(Theme.key_featuredStickers_addButton), 0))
-                    p = path.split("/")
-                    row.setOnClickListener(OnClickProxy(lambda v, u=p[0], r=p[1], f=p[2]: self.core._gh_start_download(u, r, f, "ReMeow_Modules", enable_after=True)))
-                
-                row.addView(btn); root.addView(row)
-        s = ScrollView(ctx); s.addView(root); return s
+    def onFragmentDestroy(self):
+        self._refresh_running = False
 
-if __name__ in sys.modules:
-    sys.modules["ReMeow"] = sys.modules[__name__]
+    def _refresh_loop(self):
+        while self._refresh_running:
+            time.sleep(1)
+            if self.adapter:
+                run_on_ui_thread(lambda: self.adapter.update(True))
+
+    def onBackPressed(self): return None
+    def onMenuItemClick(self, id): pass
+    def onClick(self, item, view, position, x, y): pass
+    def onLongClick(self, item, view, position, x, y): return False
+    def beforeCreateView(self): return None
+    def afterCreateView(self, view): pass
