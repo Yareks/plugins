@@ -1914,27 +1914,27 @@ class ReMeowLib(BasePlugin):
         return success
 
     def _start_banner_rotation(self):
-    """Запускает циклическую смену баннеров (каждые 11 секунд)."""
-    # Первоначальное сканирование баннеров
-    self._refresh_banner_list()
-    # Периодическое обновление списка (раз в 5 минут, на случай появления новых картинок)
-    def updater():
+        """Запускает циклическую смену баннеров (каждые 11 секунд)."""
+        # Первоначальное сканирование баннеров
+        self._refresh_banner_list()
+        # Периодическое обновление списка (раз в 5 минут, на случай появления новых картинок)
+        def updater():
+            while True:
+                time.sleep(300)  # 5 минут
+                self._refresh_banner_list()
+        threading.Thread(target=updater, daemon=True).start()
+    
         while True:
-            time.sleep(300)  # 5 минут
-            self._refresh_banner_list()
-    threading.Thread(target=updater, daemon=True).start()
-
-    while True:
-        time.sleep(11)  # <--- изменено с 25 на 11 секунд
-        if len(self.banner_list) < 2:
-            continue
-        # Выбираем следующий баннер, отличный от текущего
-        candidates = [p for p in self.banner_list if p != self.last_banner_path]
-        if not candidates:
-            candidates = self.banner_list
-        new_banner = random.choice(candidates)
-        self.last_banner_path = new_banner
-        self._apply_banner_with_fade(new_banner)
+            time.sleep(11)  # <--- изменено с 25 на 11 секунд
+            if len(self.banner_list) < 2:
+                continue
+            # Выбираем следующий баннер, отличный от текущего
+            candidates = [p for p in self.banner_list if p != self.last_banner_path]
+            if not candidates:
+                candidates = self.banner_list
+            new_banner = random.choice(candidates)
+            self.last_banner_path = new_banner
+            self._apply_banner_with_fade(new_banner)
 
     def _apply_banner_with_fade(self, path):
     """Плавно заменяет баннер на указанный."""
