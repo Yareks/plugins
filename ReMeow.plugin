@@ -22,7 +22,7 @@ from org.telegram.messenger import AndroidUtilities
 
 __id__ = "ReMeow"
 __name__ = "ReMeow Lib" 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 __author__ = "@playerqwe"
 __description__ = "Библиотека ReMeow (Core) + Module API"
 __icon__ = "Plugin2/1"
@@ -2186,76 +2186,115 @@ rem.ReMeowCore.update_module_status(self, "Загрузка данных...")
 
     def on_send_message_hook(self, account, params):
         return HookResult()
+from java.lang import Boolean
 
 class ModuleDetailsDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
     def __init__(self, pid):
         super().__init__()
         self.pid = pid
         self.data = ReLoad.get().registered_modules.get(pid, {})
-        
-    def getTitle(self): return self.data.get("name", "Модуль")
-    def fillItems(self, items, adapter):
-        if not self.data:
-            items.add(Header(text="Данные не найдены"))
-            return
-            
-        items.add(Header(text="Информация о модуле"))
-        items.add(Text(text="Версия", subtext=self.data['ver']))
-        items.add(Text(text="Статус", subtext=self.data['status']))
-        
-        ui_cb = self.data.get("ui_cb")
-        if ui_cb and callable(ui_cb):
-            try:
-                module_items = ui_cb()
-                if module_items:
-                    items.add(Header(text="Настройки модуля"))
-                    for i in module_items: items.add(i)
-            except Exception as e:
-                mlog(f"Module UI provider error ({self.pid}): {e}")
-                items.add(Text(text="Ошибка загрузки настроек", red=True))
 
-# Импортируем Boolean из java.lang
-from java.lang import Boolean
-
-class ModuleInfoDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
-    def __init__(self, pid, data):
-        super().__init__()
-        self.pid = pid
-        self.data = data
-        
-    def getTitle(self): 
-        return str(self.data.get("name", "Информация"))
+    def getTitle(self):
+        return self.data.get("name", "Детали")
 
     def fillItems(self, items, adapter):
         items.add(Header(text="Общая информация"))
         items.add(Text(text="Название", subtext=str(self.data.get("name", "N/A"))))
         items.add(Text(text="Версия", subtext=str(self.data.get("ver", "N/A"))))
         items.add(Text(text="Статус", subtext=str(self.data.get("status", "N/A"))))
-        
+
         ui_cb = self.data.get("ui_cb")
         if ui_cb and callable(ui_cb):
-            items.add(Header(text="Настройки модуля"))
             try:
-                module_ui = ui_cb()
-                if module_ui:
-                    for item in module_ui:
-                        items.add(item)
+                module_items = ui_cb()
+                if module_items:
+                    items.add(Header(text="Настройки модуля"))
+                    for i in module_items:
+                        items.add(i)
             except Exception as e:
-                mlog(f"Error loading module UI: {e}")
-                items.add(Text(text="Ошибка загрузки настроек", red=True))
+                mlog(f"UI Provider error: {e}")
+                items.add(Text(text="Ошибка UI", red=True))
 
-    # Ключевое исправление: возвращаем java.lang.Boolean
-    def onFragmentCreate(self): 
-        return Boolean(True)
-
-    def onFragmentDestroy(self): pass
-    
-    # Ключевое исправление: возвращаем java.lang.Boolean
-    def onBackPressed(self): 
-        return Boolean(True)
-
-    def onMenuItemClick(self, id): pass
-    def onClick(self, item, view, position, x, y): pass
+    def onFragmentCreate(self): return None
+    def onFragmentDestroy(self): return None
+    def onBackPressed(self): return Boolean(True)
+    def onMenuItemClick(self, menu_id): return None
+    def onClick(self, item, view, position, x, y): return None
     def onLongClick(self, item, view, position, x, y): return Boolean(False)
     def beforeCreateView(self): return None
-    def afterCreateView(self, view): pass
+    def afterCreateView(self, view): return None
+
+# Импортируем Boolean из java.lang
+from java.lang import Boolean
+
+class ModuleListDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
+    def __init__(self, rem_plugin):
+        super().__init__()
+        self.rem_plugin = rem_plugin
+        self.adapter = None
+        self._refresh_running = False
+
+    def getTitle(self):
+        return "Модули ReMeow"
+
+    def fillItems(self, items, adapter):
+        self.adapter = adapter
+        loader = ReLoad.get()
+        items.add(Header(text="Список активных модулей"))
+        
+        if not loader.registered_modules:
+            items.add(Text(text="Нет активных модулей", red=True))
+            return
+        
+        for pid, data in loader.registered_modules.items():
+            # Замыкаем pid и данные для корректного отображения
+            def open_details(v, p=pid, d=data):
+                run_on_ui_thread(lambda: get_last_fragment().presentFragment(UniversalFragment(ModuleDetailsDelegate(p))))
+            
+            items.add(Text(
+                text=data['name'],
+                subtext=f"{data['status']} | v{data['ver']}",
+                icon="msg_bot",
+                on_click=open_details,
+                on_long_click=lambda v, p=pid, n=data['name']: self._on_delete_module(p, n)
+            ))
+
+    def _on_delete_module(self, p_id, name):
+        def perform_del():
+            try:
+                # Удаляем файл
+                path = self.rem_plugin._find_self_path(p_id)
+                if path and os.path.exists(path):
+                    os.remove(path)
+                # Удаляем из памяти
+                loader = ReLoad.get()
+                if p_id in loader.registered_modules:
+                    del loader.registered_modules[p_id]
+                run_on_ui_thread(lambda: BulletinHelper.show_success(f"Модуль {name} удален."))
+            except Exception as e:
+                mlog(f"Delete error: {e}")
+        
+        act = jclass("org.telegram.ui.LaunchActivity").instance
+        AlertDialog.Builder(act) \
+            .setTitle("Удаление") \
+            .setMessage(f"Удалить модуль {name}?") \
+            .setPositiveButton("Удалить", ActionRunnable(perform_del)) \
+            .setNegativeButton("Отмена", None).show()
+        return Boolean(True)
+
+    def onFragmentCreate(self):
+        self._refresh_running = True
+        return None
+
+    def onFragmentDestroy(self):
+        self._refresh_running = False
+        return None
+
+    def onBackPressed(self):
+        return Boolean(True)
+
+    def onMenuItemClick(self, menu_id): return None
+    def onClick(self, item, view, position, x, y): return None
+    def onLongClick(self, item, view, position, x, y): return Boolean(False)
+    def beforeCreateView(self): return None
+    def afterCreateView(self, view): return None
