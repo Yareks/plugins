@@ -22,8 +22,8 @@ from org.telegram.messenger import AndroidUtilities
 
 __id__ = "ReMeow"
 __name__ = "ReMeow Lib" 
-__version__ = "1.3"
-__author__ = "@AiModuleBot"
+__version__ = "1.1"
+__author__ = "@playerqwe"
 __description__ = "Библиотека ReMeow (Core) + Module API"
 __icon__ = "Plugin2/1"
 __min_version__ = "11.0.0"
@@ -34,24 +34,6 @@ _UPDATE_SHOWN_THIS_SESSION = False
 
 def mlog(msg):
     log(f"[ReMeow] {msg}")
-
-# ========== НОВАЯ РЕАЛИЗАЦИЯ java_add ==========
-def java_add(list_obj, item):
-    """Добавление элемента в Java список через обёртку"""
-    if not item:
-        return
-    try:
-        # Пробуем напрямую
-        list_obj.add(item)
-    except Exception as e1:
-        try:
-            # Пробуем через рефлексию
-            add_method = list_obj.getClass().getMethod("add", jclass("java.lang.Object").getClass())
-            add_method.invoke(list_obj, item)
-        except Exception as e2:
-            mlog(f"Java List Add Error: {e1} / {e2}")
-
-# ========== КОНЕЦ НОВОЙ РЕАЛИЗАЦИИ ==========
 
 def is_safe_mode() -> bool:
     try:
@@ -1033,8 +1015,8 @@ class CoreInstallerSheet:
 class ExpandAnimListener(dynamic_proxy(jclass("android.animation.Animator$AnimatorListener"))):
     def __init__(self, wrapper):
         super().__init__()
-        self.canceled = False
         self.wrapper = wrapper
+        self.canceled = False
         
     def onAnimationStart(self, *args):
         self.canceled = False
@@ -2039,7 +2021,7 @@ class ReMeowLib(BasePlugin):
         return [
             Custom(view=self._get_banner_view()), 
             Header(text=f"ReMeow Core v{__version__}"), 
-            Text(text="Список модулей", icon="msg_bot", subtext="Интегрированные плагины", on_click=lambda v: run_on_ui_thread(lambda: get_last_fragment().presentFragment(UniversalFragment(ModuleListDelegate(self))))),
+            Text(text="Список модулей", icon="msg_bot", subtext="Интегрированные плагины", create_sub_fragment=self._modules_list_page),
             Text(text="Дизайн", icon="msg_palette", create_sub_fragment=self._design_sub_page), 
             Header(text="Синхронизация"),
             Text(text="Проверить обновления", icon="msg_download", on_click=lambda v: threading.Thread(target=self._perform_initial_check, args=(False,), daemon=True).start()),
@@ -2049,6 +2031,67 @@ class ReMeowLib(BasePlugin):
             Divider()
         ]
 
+    def _modules_list_page(self):
+        loader = ReLoad.get()
+        items = []
+        items.append(Header(text="Подключенные модули"))
+        
+        if not loader.registered_modules:
+            items.append(Text(text="Нет активных модулей", red=True))
+            return items
+
+        for pid, data in loader.registered_modules.items():
+            # Используем переменные внутри замыкания правильно
+            def get_on_click(p_id):
+                return lambda v: run_on_ui_thread(lambda: get_last_fragment().presentFragment(
+                    UniversalFragment(ModuleDetailsDelegate(p_id))
+                ))
+
+            def get_on_long_click(p_id, name):
+                return lambda v: self._show_delete_dialog(p_id, name)
+
+            items.append(Text(
+                text=data['name'], 
+                subtext=f"{data['status']} | v{data['ver']}",
+                on_click=get_on_click(pid),
+                on_long_click=get_on_long_click(pid, data['name'])
+            ))
+            
+        return items
+    def _show_delete_dialog(self, p_id, name):
+        """Вспомогательный метод для отображения диалога удаления"""
+        loader = ReLoad.get()
+        
+        def perform_del():
+            # 1. Удаляем файл модуля
+            path = self._find_self_path(p_id)
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                    mlog(f"Файл {path} удален.")
+                except Exception as e:
+                    mlog(f"Ошибка при удалении файла: {e}")
+            
+            # 2. Удаляем из памяти
+            if p_id in loader.registered_modules:
+                del loader.registered_modules[p_id]
+            
+            # 3. Уведомление
+            run_on_ui_thread(lambda: BulletinHelper.show_success(f"Модуль {name} удален. Перезапустите клиент."))
+            # Можно принудительно обновить фрагмент, если нужно
+            try: get_last_fragment().finishFragment()
+            except: pass
+
+        # Создаем диалог
+        act = jclass("org.telegram.ui.LaunchActivity").instance
+        if not act: return
+
+        builder = AlertDialog.Builder(act)
+        builder.setTitle("Удаление модуля")
+        builder.setMessage(f"Вы уверены, что хотите удалить модуль '{name}'?")
+        builder.setPositiveButton("Удалить", ActionRunnable(perform_del))
+        builder.setNegativeButton("Отмена", None)
+        builder.show()
     def _others_sub_page(self):
         doc_snippet = """# ReMeow Module API Guide
 
@@ -2142,117 +2185,35 @@ rem.ReMeowCore.update_module_status(self, "Загрузка данных...")
     def on_send_message_hook(self, account, params):
         return HookResult()
 
-class ModuleListDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
-    def __init__(self, rem_plugin):
-        super().__init__()
-        self.rem_plugin = rem_plugin
-        self.adapter = None
-        self._refresh_running = False
-
-    def getTitle(self): return "Модули ReMeow"
-    def fillItems(self, items, adapter):
-        self.adapter = adapter
-        loader = ReLoad.get()
-        java_add(items, Header(text="Список активных модулей"))
-        if not loader.registered_modules:
-            java_add(items, Text(text="Нет активных модулей", red=True))
-            return
-        
-        for pid, data in loader.registered_modules.items():
-            status_text = f"{data['status']} | v{data['ver']}"
-            java_add(items, Text(
-                text=data['name'], 
-                subtext=status_text,
-                on_click=lambda v, p=pid: run_on_ui_thread(lambda: get_last_fragment().presentFragment(UniversalFragment(ModuleDetailsDelegate(p)))),
-                on_long_click=lambda v, p=pid, n=data['name']: self._on_delete_module(p, n)
-            ))
-
-    def _on_delete_module(self, p_id, name):
-        def perform_del():
-            try:
-                PC = jclass("com.exteragram.messenger.plugins.PluginsController").getInstance()
-                PC.setPluginEnabled(p_id, False, None)
-                path = self.rem_plugin._find_self_path(p_id)
-                if path and os.path.exists(path):
-                    os.remove(path)
-                loader = ReLoad.get()
-                if p_id in loader.registered_modules:
-                    del loader.registered_modules[p_id]
-                run_on_ui_thread(lambda: (self.adapter.update(True) if self.adapter else None, BulletinHelper.show_success(f"Модуль {name} полностью удален.")))
-            except Exception as e:
-                mlog(f"Delete error: {e}")
-        
-        AlertDialog.Builder(jclass("org.telegram.ui.LaunchActivity").instance) \
-            .setTitle("Полное удаление") \
-            .setMessage(f"Вы уверены, что хотите удалить файл плагина и все данные модуля {name}?") \
-            .setPositiveButton("Удалить", ActionRunnable(perform_del)) \
-            .setNegativeButton("Отмена", None).show()
-        return True
-
-    def onFragmentCreate(self):
-        self._refresh_running = True
-        threading.Thread(target=self._refresh_loop, daemon=True).start()
-
-    def onFragmentDestroy(self):
-        self._refresh_running = False
-
-    def _refresh_loop(self):
-        while self._refresh_running:
-            time.sleep(1.2)
-            if self.adapter:
-                run_on_ui_thread(lambda: self.adapter.update(True))
-
-    def onBackPressed(self): return None
-    def onMenuItemClick(self, id): pass
-    def onClick(self, item, view, position, x, y): pass
-    def onLongClick(self, item, view, position, x, y): return False
-    def beforeCreateView(self): return None
-    def afterCreateView(self, view): pass
-
 class ModuleDetailsDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
     def __init__(self, pid):
         super().__init__()
         self.pid = pid
         self.data = ReLoad.get().registered_modules.get(pid, {})
-        self.adapter = None
-        self._refresh_running = False
         
     def getTitle(self): return self.data.get("name", "Модуль")
     def fillItems(self, items, adapter):
-        self.adapter = adapter
         if not self.data:
-            java_add(items, Header(text="Данные не найдены"))
+            items.add(Header(text="Данные не найдены"))
             return
             
-        java_add(items, Header(text="Информация о модуле"))
-        java_add(items, Text(text="Версия", subtext=self.data['ver']))
-        java_add(items, Text(text="Статус", subtext=self.data['status']))
+        items.add(Header(text="Информация о модуле"))
+        items.add(Text(text="Версия", subtext=self.data['ver']))
+        items.add(Text(text="Статус", subtext=self.data['status']))
         
         ui_cb = self.data.get("ui_cb")
         if ui_cb and callable(ui_cb):
             try:
                 module_items = ui_cb()
                 if module_items:
-                    java_add(items, Header(text="Настройки модуля"))
-                    for i in module_items: 
-                        java_add(items, i)
+                    items.add(Header(text="Настройки модуля"))
+                    for i in module_items: items.add(i)
             except Exception as e:
                 mlog(f"Module UI provider error ({self.pid}): {e}")
-                java_add(items, Text(text="Ошибка загрузки настроек", red=True))
+                items.add(Text(text="Ошибка загрузки настроек", red=True))
 
-    def onFragmentCreate(self):
-        self._refresh_running = True
-        threading.Thread(target=self._refresh_loop, daemon=True).start()
-
-    def onFragmentDestroy(self):
-        self._refresh_running = False
-
-    def _refresh_loop(self):
-        while self._refresh_running:
-            time.sleep(1)
-            if self.adapter:
-                run_on_ui_thread(lambda: self.adapter.update(True))
-
+    def onFragmentCreate(self): pass
+    def onFragmentDestroy(self): pass
     def onBackPressed(self): return None
     def onMenuItemClick(self, id): pass
     def onClick(self, item, view, position, x, y): pass
