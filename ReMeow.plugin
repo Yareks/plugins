@@ -22,7 +22,7 @@ from org.telegram.messenger import AndroidUtilities
 
 __id__ = "ReMeow"
 __name__ = "ReMeow Lib" 
-__version__ = "1.1"
+__version__ = "1.1.1"
 __author__ = "@playerqwe"
 __description__ = "Библиотека ReMeow (Core) + Module API"
 __icon__ = "Plugin2/1"
@@ -2034,27 +2034,29 @@ class ReMeowLib(BasePlugin):
     def _modules_list_page(self):
         loader = ReLoad.get()
         items = []
-        items.append(Header(text="Подключенные модули"))
+        items.append(Header(text="Активные модули"))
         
         if not loader.registered_modules:
             items.append(Text(text="Нет активных модулей", red=True))
             return items
 
         for pid, data in loader.registered_modules.items():
-            # Используем переменные внутри замыкания правильно
-            def get_on_click(p_id):
-                return lambda v: run_on_ui_thread(lambda: get_last_fragment().presentFragment(
-                    UniversalFragment(ModuleDetailsDelegate(p_id))
-                ))
-
-            def get_on_long_click(p_id, name):
-                return lambda v: self._show_delete_dialog(p_id, name)
+            # Замыкаем переменные через аргументы функции
+            def open_mod_page(p=pid, d=data):
+                def run():
+                    # Создаем делегат с данными конкретного модуля
+                    delegate = ModuleInfoDelegate(p, d)
+                    # Создаем фрагмент через UniversalFragment
+                    frag = UniversalFragment(delegate)
+                    # Безопасно открываем
+                    get_last_fragment().presentFragment(frag)
+                run_on_ui_thread(run)
 
             items.append(Text(
                 text=data['name'], 
                 subtext=f"{data['status']} | v{data['ver']}",
-                on_click=get_on_click(pid),
-                on_long_click=get_on_long_click(pid, data['name'])
+                icon="msg_bot",
+                on_click=lambda v, f=open_mod_page: f()
             ))
             
         return items
@@ -2212,9 +2214,38 @@ class ModuleDetailsDelegate(dynamic_proxy(UniversalFragmentDelegate) if Universa
                 mlog(f"Module UI provider error ({self.pid}): {e}")
                 items.add(Text(text="Ошибка загрузки настроек", red=True))
 
-    def onFragmentCreate(self): pass
+
+class ModuleInfoDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
+    def __init__(self, pid, data):
+        super().__init__()
+        self.pid = pid
+        self.data = data # Словарь с инфой модуля
+        
+    def getTitle(self): 
+        return self.data.get("name", "Информация")
+
+    def fillItems(self, items, adapter):
+        # 1. Базовая информация
+        items.add(Header(text="Общая информация"))
+        items.add(Text(text="Название", subtext=self.data.get("name", "N/A")))
+        items.add(Text(text="Версия", subtext=self.data.get("ver", "N/A")))
+        items.add(Text(text="Статус", subtext=self.data.get("status", "N/A")))
+        
+        # 2. Кастомный UI (если модуль предоставляет)
+        ui_cb = self.data.get("ui_cb")
+        if ui_cb and callable(ui_cb):
+            items.add(Header(text="Настройки модуля"))
+            try:
+                module_ui = ui_cb()
+                for item in module_ui:
+                    items.add(item)
+            except Exception as e:
+                mlog(f"Error loading module UI: {e}")
+                items.add(Text(text="Ошибка загрузки настроек", red=True))
+
+    def onFragmentCreate(self): return True
     def onFragmentDestroy(self): pass
-    def onBackPressed(self): return None
+    def onBackPressed(self): return True
     def onMenuItemClick(self, id): pass
     def onClick(self, item, view, position, x, y): pass
     def onLongClick(self, item, view, position, x, y): return False
