@@ -3,3 +3,4 @@ Banner - Yareks/plugins/banner.png, Yareks/plugins/banner2.png, Yareks/plugins/b
 Lib - Yareks/plugins/ReMeow.plugin
 Lib installer - Yareks/plugins/installer.plugin
 Modules -
+Donate - Yareks/plugins/pay.txt
