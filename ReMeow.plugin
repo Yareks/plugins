@@ -2298,3 +2298,4 @@ class ModuleListDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFr
     def onLongClick(self, item, view, position, x, y): return Boolean(False)
     def beforeCreateView(self): return None
     def afterCreateView(self, view): return None
+
