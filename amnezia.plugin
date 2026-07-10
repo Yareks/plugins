@@ -30,9 +30,9 @@ except ImportError:
 # --- Метаданные плагина ---
 __id__ = "MeowWG"
 __name__ = "MeowWG VPN"
-__description__ = "Обход Блокировок (Fork @swagnonher)"
+__description__ = "Обход блокировок (@swagnonher Fork)"
 __author__ = "@playerqwe"
-__version__ = "1.2"
+__version__ = "1.3"
 __icon__ = "Plugin2/0"
 __min_version__ = "11.12.0"
 
@@ -460,15 +460,12 @@ class AmneziaWGPlugin(BasePlugin):
             self.monitor_thread.join(timeout=2)
         self.monitor_thread = None
 
-    # --- Активная проверка соединения (из server_status) --- [source: 11]
     def _is_proxy_working(self) -> bool:
         import struct
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(HEARTBEAT_TIMEOUT)
         try:
-            # Прямое подключение к локальному SOCKS5 прокси
             s.connect((PROXY_IP, PROXY_PORT))
-            # Аутентификация SOCKS5 (без логина/пароля)
             s.send(b"\x05\x01\x00")
             resp = s.recv(2)
             if len(resp) == 2 and resp[1] == 0x00:
@@ -488,12 +485,18 @@ class AmneziaWGPlugin(BasePlugin):
                 continue
                 
             if not self._is_proxy_working():
-                Logger.d("Соединение потеряно, выполняю автоматическую смену ключа...")
-                run_on_ui_thread(lambda: BulletinHelper.show_info("переподключаюсь..:3"))[cite: 10]
+                Logger.d("Соединение потеряно. Начинаю смену ключа...")
+                # Моментальный показ первого уведомления при падении соединения
+                run_on_ui_thread(lambda: BulletinHelper.show_info("Исправляем Прокси..:3"))
+                
+                # Короткая пауза перед переподключением, чтобы юзер успел считать первое сообщение
+                time.sleep(1) 
+                
+                # Показ второго уведомления перед непосредственным обновлением прокси
+                run_on_ui_thread(lambda: BulletinHelper.show_info("Переподключаем Прокси..:3"))
                 run_on_ui_thread(self._reconnect_vpn)
 
     def _reconnect_vpn(self):
         self._disconnect(silent=True)
         time.sleep(1)
-        # Пробуем запросить новый анонимный ключ для обхода блокировки
         self._fetch_and_start()
