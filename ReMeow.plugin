@@ -22,7 +22,7 @@ from org.telegram.messenger import AndroidUtilities
 
 __id__ = "ReMeow"
 __name__ = "ReMeow Lib" 
-__version__ = "1.1.4"
+__version__ = "1.2.0"
 __author__ = "@playerqwe"
 __description__ = "Библиотека ReMeow (Core) + Module API"
 __icon__ = "Plugin2/1"
@@ -561,6 +561,20 @@ class ReMeowCore:
 
         pid = getattr(plugin_instance, "__id__", "unknown")
         
+        # Автоматическая регистрация плагина как модуля при его инициализации
+        loader = ReLoad.get()
+        if pid not in loader.registered_modules:
+            name = getattr(plugin_instance, "__name__", pid)
+            version = getattr(plugin_instance, "__version__", "1.0")
+            ui_cb = getattr(plugin_instance, "create_settings", None)
+            ReMeowCore.register_module(
+                plugin_instance,
+                name=name,
+                version=version,
+                status="Запуск...",
+                ui_provider=ui_cb
+            )
+        
         if not _CFFI_READY.is_set():
             mlog(f"[{pid}] CFFI not ready. Launching progressive async wait...")
             threading.Thread(
@@ -630,6 +644,7 @@ class ReMeowCore:
                 
         if not cffi_ok:
             mlog(f"[{pid}] FATAL: CFFI initialization completely failed. Crying sheet incoming.")
+            ReMeowCore.update_module_status(plugin_instance, "Сбой CFFI")
             def show_crying():
                 try:
                     act = jclass("org.telegram.ui.LaunchActivity").instance
@@ -666,7 +681,9 @@ class ReMeowCore:
                 mod = sys.modules.get(plugin_instance.__module__)
                 reqs = getattr(mod, "__ReqRements__", {})
             except: pass
-        if not reqs: return
+        if not reqs:
+            ReMeowCore.update_module_status(plugin_instance, "Активен")
+            return
         
         loader = ReLoad.get()
         pid = getattr(plugin_instance, "__id__", None)
@@ -725,6 +742,7 @@ class ReMeowCore:
             
             if not success_flag[0]:
                 mlog(f"ReMeow: Failed to download dependencies for {pid}. Please reinstall.")
+                ReMeowCore.update_module_status(plugin_instance, "Ошибка")
                 return
 
         for name, data in reqs.items():
@@ -739,6 +757,8 @@ class ReMeowCore:
                 loader._storage[name] = lib
             elif not opt:
                 mlog(f"ReMeow: Failed to inject required module {name}")
+
+        ReMeowCore.update_module_status(plugin_instance, "Активен")
 
 class DependencyProgressSheet:
     def __init__(self, context, modules_to_download, on_finish, on_error=None):
@@ -2045,7 +2065,7 @@ class ReMeowLib(BasePlugin):
             def open_mod_page(p=pid, d=data):
                 def run():
                     # Создаем делегат с данными конкретного модуля
-                    delegate = ModuleDetailsDelegate(p, d)
+                    delegate = ModuleDetailsDelegate(p)
                     # Создаем фрагмент через UniversalFragment
                     frag = UniversalFragment(delegate)
                     # Безопасно открываем
@@ -2056,7 +2076,8 @@ class ReMeowLib(BasePlugin):
                 text=data['name'], 
                 subtext=f"{data['status']} | v{data['ver']}",
                 icon="msg_bot",
-                on_click=lambda v, f=open_mod_page: f()
+                on_click=lambda v, f=open_mod_page: f(),
+                on_long_click=lambda v, p=pid, n=data['name']: self._show_delete_dialog(p, n)
             ))
             
         return items
@@ -2189,10 +2210,10 @@ rem.ReMeowCore.update_module_status(self, "Загрузка данных...")
 from java.lang import Boolean
 
 class ModuleDetailsDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFragmentDelegate else object):
-    def __init__(self, pid):
+    def __init__(self, pid, data=None):
         super().__init__()
         self.pid = pid
-        self.data = ReLoad.get().registered_modules.get(pid, {})
+        self.data = data if data is not None else ReLoad.get().registered_modules.get(pid, {})
 
     def getTitle(self):
         return self.data.get("name", "Детали")
@@ -2298,4 +2319,3 @@ class ModuleListDelegate(dynamic_proxy(UniversalFragmentDelegate) if UniversalFr
     def onLongClick(self, item, view, position, x, y): return Boolean(False)
     def beforeCreateView(self): return None
     def afterCreateView(self, view): return None
-
